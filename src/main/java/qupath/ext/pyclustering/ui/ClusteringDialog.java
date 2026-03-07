@@ -17,10 +17,12 @@ import qupath.ext.pyclustering.model.ClusteringResult;
 import qupath.ext.pyclustering.service.MeasurementExtractor;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
-import qupath.lib.objects.PathObject;
+import qupath.lib.projects.Project;
+import qupath.lib.projects.ProjectImageEntry;
 
+import java.awt.image.BufferedImage;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.function.Consumer;
 
 /**
  * Main dialog for configuring and running clustering analysis.
@@ -33,6 +35,8 @@ public class ClusteringDialog {
     private final Stage owner;
 
     // UI components
+    private RadioButton scopeCurrentImage;
+    private RadioButton scopeAllImages;
     private ListView<String> measurementList;
     private ComboBox<Normalization> normalizationCombo;
     private ComboBox<EmbeddingMethod> embeddingCombo;
@@ -70,6 +74,8 @@ public class ClusteringDialog {
         content.setPrefWidth(550);
 
         content.getChildren().addAll(
+                createScopeSection(),
+                new Separator(),
                 createMeasurementSection(),
                 new Separator(),
                 createNormalizationSection(),
@@ -108,6 +114,29 @@ public class ClusteringDialog {
         updateAlgorithmParams();
 
         dialog.show();
+    }
+
+    private HBox createScopeSection() {
+        ToggleGroup scopeGroup = new ToggleGroup();
+        scopeCurrentImage = new RadioButton("Current image");
+        scopeCurrentImage.setToggleGroup(scopeGroup);
+        scopeCurrentImage.setSelected(true);
+
+        scopeAllImages = new RadioButton("All project images");
+        scopeAllImages.setToggleGroup(scopeGroup);
+
+        // Disable "All project images" if no project is open
+        Project<BufferedImage> project = qupath.getProject();
+        if (project == null || project.getImageList().size() <= 1) {
+            scopeAllImages.setDisable(true);
+            scopeAllImages.setText("All project images (requires project with multiple images)");
+        } else {
+            scopeAllImages.setText("All project images (" + project.getImageList().size() + ")");
+        }
+
+        HBox box = new HBox(15, new Label("Scope:"), scopeCurrentImage, scopeAllImages);
+        box.setAlignment(Pos.CENTER_LEFT);
+        return box;
     }
 
     private TitledPane createMeasurementSection() {
@@ -294,6 +323,9 @@ public class ClusteringDialog {
     private ClusteringConfig buildConfig() {
         ClusteringConfig config = new ClusteringConfig();
 
+        // Scope
+        config.setClusterEntireProject(scopeAllImages.isSelected());
+
         // Selected measurements
         List<String> selected = new ArrayList<>(measurementList.getSelectionModel().getSelectedItems());
         if (selected.isEmpty()) {
@@ -355,8 +387,21 @@ public class ClusteringDialog {
         Thread clusterThread = new Thread(() -> {
             try {
                 ClusteringWorkflow workflow = new ClusteringWorkflow(qupath);
-                ClusteringResult result = workflow.runClustering(config,
-                        msg -> Platform.runLater(() -> statusLabel.setText(msg)));
+                Consumer<String> progress = msg -> Platform.runLater(() -> statusLabel.setText(msg));
+                ClusteringResult result;
+
+                if (config.isClusterEntireProject()) {
+                    // Multi-image project clustering
+                    Project<BufferedImage> project = qupath.getProject();
+                    if (project == null) {
+                        throw new Exception("No project is open.");
+                    }
+                    List<ProjectImageEntry<BufferedImage>> entries = project.getImageList();
+                    result = workflow.runProjectClustering(entries, config, progress);
+                } else {
+                    // Single-image clustering
+                    result = workflow.runClustering(config, progress);
+                }
 
                 Platform.runLater(() -> {
                     progressBar.setProgress(1.0);

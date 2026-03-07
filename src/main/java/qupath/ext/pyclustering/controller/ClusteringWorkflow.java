@@ -4,7 +4,6 @@ import javafx.application.Platform;
 import org.apposed.appose.NDArray;
 import org.apposed.appose.Service.Task;
 import org.apposed.appose.Service.ResponseType;
-import org.apposed.appose.TaskEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.pyclustering.model.ClusteringConfig;
@@ -25,6 +24,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+
+import qupath.lib.projects.ProjectImageEntry;
 
 /**
  * Orchestrates the end-to-end clustering workflow:
@@ -137,6 +138,143 @@ public class ClusteringWorkflow {
 
         report(progressCallback, "Clustering complete: " + result.getNClusters()
                 + " clusters found for " + result.getNCells() + " cells.");
+
+        return result;
+    }
+
+    /**
+     * Runs clustering across multiple project images simultaneously.
+     * Detections from all selected images are combined, clustered together
+     * for global consistency, then results are written back per-image.
+     *
+     * @param imageEntries       project image entries to include
+     * @param config             clustering configuration
+     * @param progressCallback   optional callback for progress messages
+     * @return the clustering result
+     * @throws IOException if clustering fails
+     */
+    public ClusteringResult runProjectClustering(
+            List<ProjectImageEntry<BufferedImage>> imageEntries,
+            ClusteringConfig config,
+            Consumer<String> progressCallback) throws IOException {
+
+        if (imageEntries == null || imageEntries.isEmpty()) {
+            throw new IOException("No project images selected for clustering.");
+        }
+
+        report(progressCallback, "Loading detections from " + imageEntries.size() + " images...");
+
+        // Build detection groups from each image
+        List<MeasurementExtractor.ImageDetectionGroup> groups = new ArrayList<>();
+        for (int idx = 0; idx < imageEntries.size(); idx++) {
+            ProjectImageEntry<BufferedImage> entry = imageEntries.get(idx);
+            report(progressCallback, "Loading image " + (idx + 1) + "/" + imageEntries.size()
+                    + ": " + entry.getImageName());
+
+            ImageData<BufferedImage> imageData;
+            try {
+                imageData = entry.readImageData();
+            } catch (Exception e) {
+                logger.warn("Failed to read image data for {}: {}", entry.getImageName(), e.getMessage());
+                continue;
+            }
+
+            Collection<PathObject> detections = imageData.getHierarchy().getDetectionObjects();
+            if (detections.isEmpty()) {
+                logger.info("Skipping {} - no detections", entry.getImageName());
+                continue;
+            }
+
+            groups.add(new MeasurementExtractor.ImageDetectionGroup(
+                    entry, imageData, detections));
+            logger.info("Loaded {} detections from {}", detections.size(), entry.getImageName());
+        }
+
+        if (groups.isEmpty()) {
+            throw new IOException("No detection objects found in any selected images. Run cell detection first.");
+        }
+
+        // Extract measurements across all images
+        report(progressCallback, "Extracting measurements...");
+        MeasurementExtractor extractor = new MeasurementExtractor();
+        MeasurementExtractor.ExtractionResult extraction =
+                extractor.extractMultiImage(groups, config.getSelectedMeasurements());
+
+        logger.info("Combined extraction: {} cells x {} measurements across {} images",
+                extraction.getNCells(), extraction.getNMeasurements(),
+                extraction.getImageSegments().size());
+
+        // Run clustering via Appose
+        report(progressCallback, "Sending data to Python (" + extraction.getNCells()
+                + " cells x " + extraction.getNMeasurements() + " markers from "
+                + extraction.getImageSegments().size() + " images)...");
+
+        ClusteringResult result;
+        try {
+            result = ApposeClusteringService.withExtensionClassLoader(() ->
+                    executeClusteringTask(extraction, config, progressCallback));
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Clustering failed: " + e.getMessage(), e);
+        }
+
+        // Apply results back per-image and save
+        report(progressCallback, "Applying results to project images...");
+        ResultApplier applier = new ResultApplier();
+
+        for (MeasurementExtractor.ImageSegment segment : extraction.getImageSegments()) {
+            int start = segment.getStartIndex();
+            int end = segment.getEndIndex();
+
+            // Get sub-list of detections and labels for this image
+            List<PathObject> segmentDetections = extraction.getDetections().subList(start, end);
+            int[] segmentLabels = new int[end - start];
+            System.arraycopy(result.getClusterLabels(), start, segmentLabels, 0, end - start);
+
+            applier.applyClusterLabels(segmentDetections, segmentLabels);
+
+            if (result.hasEmbedding()) {
+                String prefix = ResultApplier.getEmbeddingPrefix(
+                        config.getEmbeddingMethod().getId());
+                double[][] segmentEmbedding = new double[end - start][2];
+                for (int i = 0; i < end - start; i++) {
+                    segmentEmbedding[i] = result.getEmbedding()[start + i];
+                }
+                applier.applyEmbedding(segmentDetections, segmentEmbedding, prefix);
+            }
+
+            // Save image data back to the project
+            @SuppressWarnings("unchecked")
+            ProjectImageEntry<BufferedImage> entry =
+                    (ProjectImageEntry<BufferedImage>) segment.getImageEntry();
+            @SuppressWarnings("unchecked")
+            ImageData<BufferedImage> imageData =
+                    (ImageData<BufferedImage>) segment.getImageData();
+
+            try {
+                entry.saveImageData(imageData);
+                logger.info("Saved clustering results for {} ({} detections)",
+                        entry.getImageName(), segment.getCount());
+            } catch (Exception e) {
+                logger.error("Failed to save image data for {}: {}",
+                        entry.getImageName(), e.getMessage());
+            }
+
+            report(progressCallback, "Saved results for " + entry.getImageName());
+        }
+
+        // Fire hierarchy update for the currently open image (if it was clustered)
+        Platform.runLater(() -> {
+            ImageData<BufferedImage> currentImageData = qupath.getImageData();
+            if (currentImageData != null) {
+                currentImageData.getHierarchy().fireHierarchyChangedEvent(this);
+            }
+        });
+
+        report(progressCallback, "Project clustering complete: " + result.getNClusters()
+                + " clusters found for " + result.getNCells() + " cells across "
+                + extraction.getImageSegments().size() + " images.");
 
         return result;
     }
