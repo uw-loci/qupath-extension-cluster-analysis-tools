@@ -16,8 +16,13 @@ import qupath.lib.images.ImageData;
 import qupath.lib.objects.PathObject;
 import qupath.lib.objects.hierarchy.PathObjectHierarchy;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -299,6 +304,16 @@ public class ClusteringWorkflow {
             buf.put(data[i]);
         }
 
+        // Create temp directory for plots if requested
+        Path plotDir = null;
+        if (config.isGeneratePlots()) {
+            try {
+                plotDir = Files.createTempDirectory("pyclustering-plots-");
+            } catch (IOException e) {
+                logger.warn("Failed to create plot directory: {}", e.getMessage());
+            }
+        }
+
         // Build inputs map
         Map<String, Object> inputs = new HashMap<>();
         inputs.put("measurements", measurementsNd);
@@ -308,10 +323,16 @@ public class ClusteringWorkflow {
         inputs.put("normalization", config.getNormalization().getId());
         inputs.put("embedding_method", config.getEmbeddingMethod().getId());
         inputs.put("embedding_params", config.getEmbeddingParams());
+        inputs.put("top_n_markers", config.getTopNMarkers());
+        inputs.put("generate_plots", plotDir != null);
+        if (plotDir != null) {
+            inputs.put("output_dir", plotDir.toString());
+        }
 
         NDArray labelsNd = null;
         NDArray embNd = null;
         NDArray statsNd = null;
+        NDArray pagaNd = null;
 
         try {
             // Run the task with progress updates
@@ -322,8 +343,7 @@ public class ClusteringWorkflow {
                 }
             });
 
-            // Parse outputs -- extract data from NDArrays into Java arrays,
-            // then close the NDArrays to release shared memory
+            // Parse core outputs
             labelsNd = (NDArray) task.outputs.get("cluster_labels");
             int nClusters = ((Number) task.outputs.get("n_clusters")).intValue();
 
@@ -347,14 +367,51 @@ public class ClusteringWorkflow {
                 statsBuf.get(clusterStats[i]);
             }
 
-            return new ClusteringResult(labels, nClusters, embedding,
+            ClusteringResult result = new ClusteringResult(labels, nClusters, embedding,
                     clusterStats, extraction.getMeasurementNames());
+
+            // Parse post-analysis outputs
+            if (task.outputs.containsKey("marker_rankings")) {
+                result.setMarkerRankingsJson((String) task.outputs.get("marker_rankings"));
+                logger.info("Received marker rankings for {} clusters", nClusters);
+            }
+
+            if (task.outputs.containsKey("paga_connectivity")) {
+                pagaNd = (NDArray) task.outputs.get("paga_connectivity");
+                double[][] pagaConn = new double[nClusters][nClusters];
+                var pagaBuf = pagaNd.buffer().asDoubleBuffer();
+                for (int i = 0; i < nClusters; i++) {
+                    pagaBuf.get(pagaConn[i]);
+                }
+                result.setPagaConnectivity(pagaConn);
+
+                String pagaNamesJson = (String) task.outputs.get("paga_cluster_names");
+                if (pagaNamesJson != null) {
+                    Gson gson = new Gson();
+                    List<String> namesList = gson.fromJson(pagaNamesJson,
+                            new TypeToken<List<String>>(){}.getType());
+                    result.setPagaClusterNames(namesList.toArray(new String[0]));
+                }
+                logger.info("Received PAGA connectivity ({} x {})", nClusters, nClusters);
+            }
+
+            if (task.outputs.containsKey("plot_paths")) {
+                String plotPathsJson = (String) task.outputs.get("plot_paths");
+                Gson gson = new Gson();
+                Map<String, String> paths = gson.fromJson(plotPathsJson,
+                        new TypeToken<Map<String, String>>(){}.getType());
+                result.setPlotPaths(paths);
+                logger.info("Received {} analysis plots", paths.size());
+            }
+
+            return result;
         } finally {
             // Release all shared memory
             measurementsNd.close();
             if (labelsNd != null) labelsNd.close();
             if (embNd != null) embNd.close();
             if (statsNd != null) statsNd.close();
+            if (pagaNd != null) pagaNd.close();
         }
     }
 

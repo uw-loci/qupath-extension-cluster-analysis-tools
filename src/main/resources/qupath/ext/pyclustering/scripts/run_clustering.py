@@ -10,13 +10,23 @@ Inputs (injected by Appose 0.10.0 -- accessed as variables, NOT task.inputs):
   embedding_method: str ("umap", "pca", "tsne", "none")
   embedding_params: dict (method-specific parameters)
 
+Optional inputs:
+  generate_plots: bool (default False)
+  output_dir: str (directory for plot images)
+  top_n_markers: int (default 5)
+
 Outputs (via task.outputs):
   cluster_labels: NDArray (N_cells,) int32
   n_clusters: int
   embedding: NDArray (N_cells x 2) float64 (if embedding_method != "none")
   cluster_stats: NDArray (n_clusters x N_markers) float64 -- per-cluster marker means
+  marker_rankings: str (JSON) -- top markers per cluster with scores
+  paga_connectivity: NDArray (n_clusters x n_clusters) float64 -- PAGA graph weights
+  paga_cluster_names: str (JSON) -- ordered cluster names for PAGA matrix
+  plot_paths: str (JSON) -- dict of plot type -> file path (if generate_plots)
 """
 import sys
+import os
 import logging
 
 logger = logging.getLogger("pyclustering.clustering")
@@ -33,7 +43,7 @@ logger.info("Received %d cells x %d markers", n_cells, n_markers)
 df = pd.DataFrame(data, columns=marker_names)
 
 # 2. Normalize
-task.update("Normalizing measurements...", current=0, maximum=4)
+task.update("Normalizing measurements...", current=0, maximum=6)
 
 if normalization == "zscore":
     std = df.std()
@@ -58,7 +68,7 @@ else:
 logger.info("Normalization: %s", normalization)
 
 # 3. Dimensionality reduction
-task.update("Computing embedding...", current=1, maximum=4)
+task.update("Computing embedding...", current=1, maximum=6)
 
 embedding_result = None
 if embedding_method == "umap":
@@ -96,7 +106,7 @@ elif embedding_method != "none":
     logger.warning("Unknown embedding method: %s, skipping", embedding_method)
 
 # 4. Clustering
-task.update("Running clustering algorithm...", current=2, maximum=4)
+task.update("Running clustering algorithm...", current=2, maximum=6)
 
 labels = None
 
@@ -161,7 +171,7 @@ else:
     raise ValueError("Unknown clustering algorithm: %s" % algorithm)
 
 # 5. Compute cluster statistics (per-cluster marker means on normalized data)
-task.update("Computing cluster statistics...", current=3, maximum=4)
+task.update("Computing cluster statistics...", current=3, maximum=6)
 
 n_clusters_found = int(labels.max() + 1) if labels.min() >= 0 else int(labels.max() + 2)
 # For algorithms that produce noise labels (-1), shift to 0-based
@@ -178,8 +188,152 @@ cluster_means = df_norm.groupby("cluster").mean(numeric_only=True).values
 
 logger.info("Clustering complete: %d clusters found", n_clusters_found)
 
-# 6. Package outputs
-task.update("Packaging results...", current=4, maximum=4)
+# 6. Post-clustering analysis (marker ranking + PAGA)
+task.update("Analyzing clusters...", current=4, maximum=6)
+
+import scanpy as sc
+import anndata as ad
+import json
+
+# Build full AnnData for scanpy analysis
+adata = ad.AnnData(X=df_norm.drop(columns=["cluster"]).values)
+adata.var_names = pd.Index(list(marker_names))
+cluster_labels_str = [str(x) for x in labels_shifted]
+adata.obs['cluster'] = pd.Categorical(cluster_labels_str)
+
+if embedding_result is not None:
+    adata.obsm['X_embed'] = embedding_result
+
+# Compute neighbor graph (needed for PAGA and dendrogram)
+n_neigh = min(15, n_cells - 1)
+can_analyze = n_neigh >= 2 and n_clusters_found > 1
+
+if can_analyze:
+    sc.pp.neighbors(adata, n_neighbors=n_neigh, use_rep='X')
+    sc.tl.dendrogram(adata, groupby='cluster')
+
+    # 6a. Marker ranking (Wilcoxon rank-sum test)
+    try:
+        top_n = top_n_markers
+    except NameError:
+        top_n = 5
+
+    try:
+        sc.tl.rank_genes_groups(adata, groupby='cluster', method='wilcoxon')
+
+        marker_result = {}
+        result_data = adata.uns['rank_genes_groups']
+        for cid in adata.obs['cluster'].cat.categories:
+            markers_list = []
+            names = result_data['names'][cid][:top_n]
+            scores = result_data['scores'][cid][:top_n]
+            logfcs = result_data['logfoldchanges'][cid][:top_n]
+            pvals = result_data['pvals_adj'][cid][:top_n]
+            for i in range(len(names)):
+                markers_list.append({
+                    'name': str(names[i]),
+                    'score': float(scores[i]),
+                    'logfoldchange': float(logfcs[i]),
+                    'pval_adj': float(pvals[i])
+                })
+            marker_result[str(cid)] = markers_list
+
+        task.outputs['marker_rankings'] = json.dumps(marker_result)
+        logger.info("Marker ranking complete: top %d markers per cluster", top_n)
+    except Exception as e:
+        logger.warning("Marker ranking failed: %s", e)
+
+    # 6b. PAGA (cluster connectivity / trajectory graph)
+    try:
+        sc.tl.paga(adata, groups='cluster')
+        paga_conn = adata.uns['paga']['connectivities'].toarray()
+
+        paga_nd = PyNDArray(dtype="float64", shape=list(paga_conn.shape))
+        np.copyto(paga_nd.ndarray(), paga_conn.astype(np.float64))
+        task.outputs['paga_connectivity'] = paga_nd
+        task.outputs['paga_cluster_names'] = json.dumps(
+            list(adata.obs['cluster'].cat.categories))
+        logger.info("PAGA connectivity computed (%d x %d)",
+                    paga_conn.shape[0], paga_conn.shape[1])
+    except Exception as e:
+        logger.warning("PAGA computation failed: %s", e)
+else:
+    logger.info("Skipping post-analysis (too few cells or clusters)")
+
+# 7. Generate plots (optional)
+try:
+    do_plots = generate_plots
+except NameError:
+    do_plots = False
+try:
+    plot_dir = output_dir
+except NameError:
+    plot_dir = None
+
+if do_plots and plot_dir and can_analyze:
+    task.update("Generating plots...", current=5, maximum=6)
+    import matplotlib.pyplot as plt
+
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_paths = {}
+
+    # Dotplot with dendrogram -- fraction expressing + mean expression per cluster
+    try:
+        dp = sc.pl.dotplot(adata, var_names=list(marker_names), groupby='cluster',
+                           dendrogram=True, standard_scale='var',
+                           show=False, return_fig=True)
+        dotplot_path = os.path.join(plot_dir, 'cluster_dotplot.png')
+        dp.savefig(dotplot_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+        plot_paths['dotplot'] = dotplot_path
+        logger.info("Saved dotplot: %s", dotplot_path)
+    except Exception as e:
+        logger.warning("Failed to generate dotplot: %s", e)
+
+    # Matrix plot -- mean expression heatmap per cluster
+    try:
+        mp = sc.pl.matrixplot(adata, var_names=list(marker_names), groupby='cluster',
+                              dendrogram=True, standard_scale='var',
+                              show=False, return_fig=True)
+        matrixplot_path = os.path.join(plot_dir, 'cluster_matrixplot.png')
+        mp.savefig(matrixplot_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+        plot_paths['matrixplot'] = matrixplot_path
+        logger.info("Saved matrixplot: %s", matrixplot_path)
+    except Exception as e:
+        logger.warning("Failed to generate matrixplot: %s", e)
+
+    # PAGA graph -- cluster connectivity / trajectory
+    try:
+        sc.pl.paga(adata, show=False)
+        paga_path = os.path.join(plot_dir, 'paga_graph.png')
+        plt.savefig(paga_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+        plot_paths['paga'] = paga_path
+        logger.info("Saved PAGA graph: %s", paga_path)
+    except Exception as e:
+        logger.warning("Failed to generate PAGA graph: %s", e)
+
+    # Embedding scatter colored by cluster (if embedding was computed)
+    if embedding_result is not None:
+        try:
+            embed_key = 'X_embed'
+            fig, ax = plt.subplots(figsize=(8, 6))
+            sc.pl.embedding(adata, basis='embed', color='cluster',
+                            show=False, ax=ax)
+            embed_path = os.path.join(plot_dir, 'cluster_embedding.png')
+            fig.savefig(embed_path, dpi=150, bbox_inches='tight')
+            plt.close('all')
+            plot_paths['embedding'] = embed_path
+            logger.info("Saved embedding plot: %s", embed_path)
+        except Exception as e:
+            logger.warning("Failed to generate embedding plot: %s", e)
+
+    if plot_paths:
+        task.outputs['plot_paths'] = json.dumps(plot_paths)
+
+# 8. Package core outputs
+task.update("Packaging results...", current=6, maximum=6)
 
 # Cluster labels
 labels_nd = PyNDArray(dtype="int32", shape=[n_cells])

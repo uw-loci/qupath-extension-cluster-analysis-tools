@@ -21,6 +21,7 @@ import qupath.lib.projects.Project;
 import qupath.lib.projects.ProjectImageEntry;
 
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -44,6 +45,7 @@ public class ClusteringDialog {
     private Spinner<Double> umapMinDistSpinner;
     private ComboBox<Algorithm> algorithmCombo;
     private VBox algorithmParamsBox;
+    private CheckBox generatePlotsCheck;
     private Label statusLabel;
     private ProgressBar progressBar;
     private Button runButton;
@@ -83,6 +85,8 @@ public class ClusteringDialog {
                 createEmbeddingSection(),
                 new Separator(),
                 createAlgorithmSection(),
+                new Separator(),
+                createAnalysisSection(),
                 new Separator(),
                 createStatusSection()
         );
@@ -252,6 +256,15 @@ public class ClusteringDialog {
         return pane;
     }
 
+    private HBox createAnalysisSection() {
+        generatePlotsCheck = new CheckBox("Generate analysis plots (marker ranking, PAGA, dotplot)");
+        generatePlotsCheck.setSelected(true);
+
+        HBox box = new HBox(10, generatePlotsCheck);
+        box.setAlignment(Pos.CENTER_LEFT);
+        return box;
+    }
+
     private VBox createStatusSection() {
         statusLabel = new Label("Ready");
         progressBar = new ProgressBar(0);
@@ -325,6 +338,9 @@ public class ClusteringDialog {
 
         // Scope
         config.setClusterEntireProject(scopeAllImages.isSelected());
+
+        // Analysis options
+        config.setGeneratePlots(generatePlotsCheck.isSelected());
 
         // Selected measurements
         List<String> selected = new ArrayList<>(measurementList.getSelectionModel().getSelectedItems());
@@ -410,6 +426,10 @@ public class ClusteringDialog {
                     runButton.setDisable(false);
                     Dialogs.showInfoNotification("PyClustering",
                             "Clustering complete: " + result.getNClusters() + " clusters found.");
+
+                    if (result.hasPlots() || result.hasMarkerRankings()) {
+                        showResultsDialog(result);
+                    }
                 });
             } catch (Exception e) {
                 logger.error("Clustering failed", e);
@@ -425,5 +445,95 @@ public class ClusteringDialog {
         }, "PyClustering-Run");
         clusterThread.setDaemon(true);
         clusterThread.start();
+    }
+
+    private void showResultsDialog(ClusteringResult result) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.initModality(Modality.NONE);
+        dialog.setTitle("PyClustering - Results");
+        dialog.setHeaderText(result.getNClusters() + " clusters, "
+                + result.getNCells() + " cells");
+        dialog.setResizable(true);
+
+        TabPane tabPane = new TabPane();
+
+        // Marker rankings tab
+        if (result.hasMarkerRankings()) {
+            TextArea rankingsText = new TextArea(formatMarkerRankings(result));
+            rankingsText.setEditable(false);
+            rankingsText.setStyle("-fx-font-family: monospace;");
+            Tab tab = new Tab("Marker Rankings", rankingsText);
+            tab.setClosable(false);
+            tabPane.getTabs().add(tab);
+        }
+
+        // Plot tabs
+        if (result.hasPlots()) {
+            for (Map.Entry<String, String> entry : result.getPlotPaths().entrySet()) {
+                try {
+                    javafx.scene.image.Image img = new javafx.scene.image.Image(
+                            new File(entry.getValue()).toURI().toString());
+                    javafx.scene.image.ImageView iv = new javafx.scene.image.ImageView(img);
+                    iv.setPreserveRatio(true);
+                    iv.setFitWidth(800);
+
+                    ScrollPane sp = new ScrollPane(iv);
+                    sp.setFitToWidth(true);
+
+                    String tabName = switch (entry.getKey()) {
+                        case "dotplot" -> "Dotplot";
+                        case "matrixplot" -> "Matrix Plot";
+                        case "paga" -> "PAGA Graph";
+                        case "embedding" -> "Embedding";
+                        default -> entry.getKey();
+                    };
+                    Tab tab = new Tab(tabName, sp);
+                    tab.setClosable(false);
+                    tabPane.getTabs().add(tab);
+                } catch (Exception e) {
+                    logger.warn("Failed to load plot {}: {}", entry.getKey(), e.getMessage());
+                }
+            }
+        }
+
+        dialog.getDialogPane().setContent(tabPane);
+        dialog.getDialogPane().setPrefSize(850, 650);
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+        dialog.show();
+    }
+
+    private String formatMarkerRankings(ClusteringResult result) {
+        String json = result.getMarkerRankingsJson();
+        if (json == null) return "No marker rankings available.";
+
+        try {
+            com.google.gson.Gson gson = new com.google.gson.Gson();
+            java.lang.reflect.Type type = new com.google.gson.reflect.TypeToken<
+                    Map<String, List<Map<String, Object>>>>(){}.getType();
+            Map<String, List<Map<String, Object>>> rankings = gson.fromJson(json, type);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("%-12s %-30s %10s %12s %12s%n",
+                    "Cluster", "Marker", "Score", "Log2FC", "Adj. P-val"));
+            sb.append("-".repeat(78)).append("\n");
+
+            for (Map.Entry<String, List<Map<String, Object>>> cluster : rankings.entrySet()) {
+                for (Map<String, Object> marker : cluster.getValue()) {
+                    sb.append(String.format("%-12s %-30s %10.2f %12.3f %12.2e%n",
+                            "Cluster " + cluster.getKey(),
+                            marker.get("name"),
+                            ((Number) marker.get("score")).doubleValue(),
+                            ((Number) marker.get("logfoldchange")).doubleValue(),
+                            ((Number) marker.get("pval_adj")).doubleValue()));
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            logger.warn("Failed to format marker rankings: {}", e.getMessage());
+            return json;
+        }
     }
 }

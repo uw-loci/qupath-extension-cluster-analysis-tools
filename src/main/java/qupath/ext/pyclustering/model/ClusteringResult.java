@@ -1,5 +1,7 @@
 package qupath.ext.pyclustering.model;
 
+import java.util.Map;
+
 /**
  * Holds the results of a clustering run returned from Python.
  */
@@ -10,6 +12,12 @@ public class ClusteringResult {
     private final double[][] embedding;       // may be null if no embedding was computed
     private final double[][] clusterStats;    // per-cluster marker means (nClusters x nMarkers)
     private final String[] markerNames;
+
+    // Post-analysis results (set after construction)
+    private String markerRankingsJson;
+    private double[][] pagaConnectivity;
+    private String[] pagaClusterNames;
+    private Map<String, String> plotPaths;
 
     public ClusteringResult(int[] clusterLabels, int nClusters, double[][] embedding,
                             double[][] clusterStats, String[] markerNames) {
@@ -27,4 +35,18 @@ public class ClusteringResult {
     public String[] getMarkerNames() { return markerNames; }
     public boolean hasEmbedding() { return embedding != null; }
     public int getNCells() { return clusterLabels.length; }
+
+    public String getMarkerRankingsJson() { return markerRankingsJson; }
+    public void setMarkerRankingsJson(String json) { this.markerRankingsJson = json; }
+    public boolean hasMarkerRankings() { return markerRankingsJson != null; }
+
+    public double[][] getPagaConnectivity() { return pagaConnectivity; }
+    public void setPagaConnectivity(double[][] conn) { this.pagaConnectivity = conn; }
+    public String[] getPagaClusterNames() { return pagaClusterNames; }
+    public void setPagaClusterNames(String[] names) { this.pagaClusterNames = names; }
+    public boolean hasPagaConnectivity() { return pagaConnectivity != null; }
+
+    public Map<String, String> getPlotPaths() { return plotPaths; }
+    public void setPlotPaths(Map<String, String> paths) { this.plotPaths = paths; }
+    public boolean hasPlots() { return plotPaths != null && !plotPaths.isEmpty(); }
 }

@@ -22,6 +22,10 @@ logging.basicConfig(
 logger = logging.getLogger("pyclustering.appose")
 
 try:
+    # Set non-interactive backend before any matplotlib import (scanpy pulls it in)
+    import matplotlib
+    matplotlib.use('Agg')
+
     import numpy
     import pandas
     import sklearn

@@ -82,6 +82,8 @@ public class ClusteringConfig {
     private Map<String, Object> embeddingParams = new HashMap<>();
     private List<String> selectedMeasurements;
     private boolean clusterEntireProject = false;
+    private boolean generatePlots = true;
+    private int topNMarkers = 5;
 
     public ClusteringConfig() {
         // Set sensible defaults
@@ -114,4 +116,10 @@ public class ClusteringConfig {
     public void setClusterEntireProject(boolean clusterEntireProject) {
         this.clusterEntireProject = clusterEntireProject;
     }
+
+    public boolean isGeneratePlots() { return generatePlots; }
+    public void setGeneratePlots(boolean generatePlots) { this.generatePlots = generatePlots; }
+
+    public int getTopNMarkers() { return topNMarkers; }
+    public void setTopNMarkers(int topNMarkers) { this.topNMarkers = topNMarkers; }
 }
