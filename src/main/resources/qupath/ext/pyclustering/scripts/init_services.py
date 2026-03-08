@@ -34,6 +34,8 @@ try:
     import igraph
     import scanpy
     import anndata
+    import squidpy
+    import harmonypy
 
     logger.info("PyClustering packages loaded successfully")
     logger.info("  scikit-learn: %s", sklearn.__version__)
@@ -41,6 +43,8 @@ try:
     logger.info("  umap-learn: %s", umap.__version__)
     logger.info("  leidenalg: %s", leidenalg.__version__)
     logger.info("  anndata: %s", anndata.__version__)
+    logger.info("  squidpy: %s", squidpy.__version__)
+    logger.info("  harmonypy: available")
 
     init_error = None
 

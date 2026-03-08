@@ -314,6 +314,32 @@ public class ClusteringWorkflow {
             }
         }
 
+        // Create spatial coordinates NDArray if spatial analysis is enabled
+        NDArray spatialCoordsNd = null;
+        if (config.isEnableSpatialAnalysis()) {
+            double[][] centroids = MeasurementExtractor.extractCentroids(
+                    extraction.getDetections());
+            NDArray.Shape spatialShape = new NDArray.Shape(
+                    NDArray.Shape.Order.C_ORDER, nCells, 2);
+            spatialCoordsNd = new NDArray(NDArray.DType.FLOAT64, spatialShape);
+            var spatialBuf = spatialCoordsNd.buffer().asDoubleBuffer();
+            for (int i = 0; i < nCells; i++) {
+                spatialBuf.put(centroids[i]);
+            }
+        }
+
+        // Compute batch labels for multi-image batch correction
+        List<Integer> batchLabels = null;
+        if (config.isEnableBatchCorrection() && extraction.isMultiImage()) {
+            batchLabels = new ArrayList<>();
+            for (int segIdx = 0; segIdx < extraction.getImageSegments().size(); segIdx++) {
+                MeasurementExtractor.ImageSegment seg = extraction.getImageSegments().get(segIdx);
+                for (int i = 0; i < seg.getCount(); i++) {
+                    batchLabels.add(segIdx);
+                }
+            }
+        }
+
         // Build inputs map
         Map<String, Object> inputs = new HashMap<>();
         inputs.put("measurements", measurementsNd);
@@ -328,11 +354,19 @@ public class ClusteringWorkflow {
         if (plotDir != null) {
             inputs.put("output_dir", plotDir.toString());
         }
+        if (spatialCoordsNd != null) {
+            inputs.put("spatial_coords", spatialCoordsNd);
+        }
+        if (batchLabels != null) {
+            inputs.put("enable_batch_correction", true);
+            inputs.put("batch_labels", batchLabels);
+        }
 
         NDArray labelsNd = null;
         NDArray embNd = null;
         NDArray statsNd = null;
         NDArray pagaNd = null;
+        NDArray nhoodNd = null;
 
         try {
             // Run the task with progress updates
@@ -404,14 +438,44 @@ public class ClusteringWorkflow {
                 logger.info("Received {} analysis plots", paths.size());
             }
 
+            // Parse spatial analysis outputs
+            if (task.outputs.containsKey("nhood_enrichment")) {
+                nhoodNd = (NDArray) task.outputs.get("nhood_enrichment");
+                int nhoodSize = nClusters;
+                double[][] nhoodData = new double[nhoodSize][nhoodSize];
+                var nhoodBuf = nhoodNd.buffer().asDoubleBuffer();
+                for (int i = 0; i < nhoodSize; i++) {
+                    nhoodBuf.get(nhoodData[i]);
+                }
+                result.setNhoodEnrichment(nhoodData);
+
+                String nhoodNamesJson = (String) task.outputs.get("nhood_cluster_names");
+                if (nhoodNamesJson != null) {
+                    Gson gson = new Gson();
+                    List<String> namesList = gson.fromJson(nhoodNamesJson,
+                            new TypeToken<List<String>>(){}.getType());
+                    result.setNhoodClusterNames(namesList.toArray(new String[0]));
+                }
+                logger.info("Received neighborhood enrichment ({} x {})",
+                        nhoodSize, nhoodSize);
+            }
+
+            if (task.outputs.containsKey("spatial_autocorr")) {
+                result.setSpatialAutocorrJson(
+                        (String) task.outputs.get("spatial_autocorr"));
+                logger.info("Received spatial autocorrelation results");
+            }
+
             return result;
         } finally {
             // Release all shared memory
             measurementsNd.close();
+            if (spatialCoordsNd != null) spatialCoordsNd.close();
             if (labelsNd != null) labelsNd.close();
             if (embNd != null) embNd.close();
             if (statsNd != null) statsNd.close();
             if (pagaNd != null) pagaNd.close();
+            if (nhoodNd != null) nhoodNd.close();
         }
     }
 

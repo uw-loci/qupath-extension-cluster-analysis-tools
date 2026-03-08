@@ -84,6 +84,8 @@ public class ClusteringConfig {
     private boolean clusterEntireProject = false;
     private boolean generatePlots = true;
     private int topNMarkers = 5;
+    private boolean enableSpatialAnalysis = false;
+    private boolean enableBatchCorrection = false;
 
     public ClusteringConfig() {
         // Set sensible defaults
@@ -122,4 +124,10 @@ public class ClusteringConfig {
 
     public int getTopNMarkers() { return topNMarkers; }
     public void setTopNMarkers(int topNMarkers) { this.topNMarkers = topNMarkers; }
+
+    public boolean isEnableSpatialAnalysis() { return enableSpatialAnalysis; }
+    public void setEnableSpatialAnalysis(boolean v) { this.enableSpatialAnalysis = v; }
+
+    public boolean isEnableBatchCorrection() { return enableBatchCorrection; }
+    public void setEnableBatchCorrection(boolean v) { this.enableBatchCorrection = v; }
 }

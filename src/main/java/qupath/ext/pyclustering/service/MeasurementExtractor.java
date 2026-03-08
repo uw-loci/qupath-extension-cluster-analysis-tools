@@ -243,6 +243,22 @@ public class MeasurementExtractor {
     }
 
     /**
+     * Extracts XY centroid coordinates from detection ROIs.
+     *
+     * @param detections ordered list of detections
+     * @return double[nCells][2] array of (centroidX, centroidY) in pixel coordinates
+     */
+    public static double[][] extractCentroids(List<PathObject> detections) {
+        double[][] coords = new double[detections.size()][2];
+        for (int i = 0; i < detections.size(); i++) {
+            var roi = detections.get(i).getROI();
+            coords[i][0] = roi.getCentroidX();
+            coords[i][1] = roi.getCentroidY();
+        }
+        return coords;
+    }
+
+    /**
      * Returns all unique measurement names from the given detections.
      */
     public static List<String> getAllMeasurements(Collection<? extends PathObject> detections) {

@@ -14,6 +14,9 @@ Optional inputs:
   generate_plots: bool (default False)
   output_dir: str (directory for plot images)
   top_n_markers: int (default 5)
+  spatial_coords: NDArray (N_cells x 2, float64) -- cell XY centroids for spatial analysis
+  enable_batch_correction: bool (default False)
+  batch_labels: list[int] -- image index per cell for batch correction
 
 Outputs (via task.outputs):
   cluster_labels: NDArray (N_cells,) int32
@@ -23,6 +26,9 @@ Outputs (via task.outputs):
   marker_rankings: str (JSON) -- top markers per cluster with scores
   paga_connectivity: NDArray (n_clusters x n_clusters) float64 -- PAGA graph weights
   paga_cluster_names: str (JSON) -- ordered cluster names for PAGA matrix
+  nhood_enrichment: NDArray (n_clusters x n_clusters) float64 -- neighborhood z-scores
+  nhood_cluster_names: str (JSON) -- cluster names for enrichment matrix
+  spatial_autocorr: str (JSON) -- per-marker Moran's I scores
   plot_paths: str (JSON) -- dict of plot type -> file path (if generate_plots)
 """
 import sys
@@ -66,6 +72,29 @@ else:
     df_norm = df.copy()
 
 logger.info("Normalization: %s", normalization)
+
+# 2b. Batch correction (Harmony, for multi-image clustering)
+try:
+    do_batch = enable_batch_correction
+except NameError:
+    do_batch = False
+try:
+    batch_labels_list = batch_labels
+except NameError:
+    batch_labels_list = None
+
+if do_batch and batch_labels_list is not None:
+    task.update("Running batch correction (Harmony)...")
+    import harmonypy as hm
+
+    n_batches = len(set(batch_labels_list))
+    if n_batches > 1:
+        meta_df = pd.DataFrame({'batch': [str(b) for b in batch_labels_list]})
+        ho = hm.run_harmony(df_norm.values, meta_df, 'batch')
+        df_norm = pd.DataFrame(ho.Z_corr.T, columns=df_norm.columns)
+        logger.info("Harmony batch correction applied (%d batches)", n_batches)
+    else:
+        logger.info("Skipping batch correction (only 1 batch)")
 
 # 3. Dimensionality reduction
 task.update("Computing embedding...", current=1, maximum=6)
@@ -260,6 +289,64 @@ if can_analyze:
 else:
     logger.info("Skipping post-analysis (too few cells or clusters)")
 
+# 6c. Spatial analysis (if coordinates provided)
+try:
+    spatial_data = spatial_coords.ndarray().copy()
+    has_spatial = True
+except NameError:
+    has_spatial = False
+
+if has_spatial and n_clusters_found > 1:
+    task.update("Running spatial analysis...")
+    import squidpy as sq
+
+    adata.obsm['spatial'] = spatial_data
+    adata.obsm['X_spatial'] = spatial_data  # for scanpy plotting (basis='spatial')
+    logger.info("Spatial coordinates loaded (%d cells)", spatial_data.shape[0])
+
+    # Build spatial neighbor graph (Delaunay triangulation)
+    try:
+        sq.gr.spatial_neighbors(adata, coord_type='generic', delaunay=True)
+        logger.info("Spatial neighbor graph built (Delaunay)")
+    except Exception as e:
+        logger.warning("Spatial neighbor graph failed: %s", e)
+        has_spatial = False
+
+if has_spatial and n_clusters_found > 1:
+    # Neighborhood enrichment (z-score matrix)
+    try:
+        sq.gr.nhood_enrichment(adata, cluster_key='cluster')
+        nhood_data = adata.uns['cluster_nhood_enrichment']
+        zscore = nhood_data['zscore']
+
+        nhood_nd = PyNDArray(dtype="float64", shape=list(zscore.shape))
+        np.copyto(nhood_nd.ndarray(), zscore.astype(np.float64))
+        task.outputs['nhood_enrichment'] = nhood_nd
+        task.outputs['nhood_cluster_names'] = json.dumps(
+            list(adata.obs['cluster'].cat.categories))
+        logger.info("Neighborhood enrichment computed (%d x %d)",
+                    zscore.shape[0], zscore.shape[1])
+    except Exception as e:
+        logger.warning("Neighborhood enrichment failed: %s", e)
+
+    # Spatial autocorrelation (Moran's I per marker)
+    try:
+        df_autocorr = sq.gr.spatial_autocorr(adata, mode='moran')
+        autocorr_results = {}
+        for marker in marker_names:
+            if marker in df_autocorr.index:
+                row = df_autocorr.loc[marker]
+                autocorr_results[marker] = {
+                    'I': float(row['I']),
+                    'pval': float(row.get('pval_norm', row.get('pval_z_sim',
+                                         float('nan'))))
+                }
+        task.outputs['spatial_autocorr'] = json.dumps(autocorr_results)
+        logger.info("Spatial autocorrelation (Moran's I) computed for %d markers",
+                    len(autocorr_results))
+    except Exception as e:
+        logger.warning("Spatial autocorrelation failed: %s", e)
+
 # 7. Generate plots (optional)
 try:
     do_plots = generate_plots
@@ -317,7 +404,6 @@ if do_plots and plot_dir and can_analyze:
     # Embedding scatter colored by cluster (if embedding was computed)
     if embedding_result is not None:
         try:
-            embed_key = 'X_embed'
             fig, ax = plt.subplots(figsize=(8, 6))
             sc.pl.embedding(adata, basis='embed', color='cluster',
                             show=False, ax=ax)
@@ -328,6 +414,45 @@ if do_plots and plot_dir and can_analyze:
             logger.info("Saved embedding plot: %s", embed_path)
         except Exception as e:
             logger.warning("Failed to generate embedding plot: %s", e)
+
+    # Spatial plots (if spatial coordinates were provided)
+    if has_spatial:
+        # Neighborhood enrichment heatmap
+        try:
+            sq.pl.nhood_enrichment(adata, cluster_key='cluster', show=False)
+            nhood_path = os.path.join(plot_dir, 'nhood_enrichment.png')
+            plt.savefig(nhood_path, dpi=150, bbox_inches='tight')
+            plt.close('all')
+            plot_paths['nhood_enrichment'] = nhood_path
+            logger.info("Saved neighborhood enrichment heatmap: %s", nhood_path)
+        except Exception as e:
+            logger.warning("Failed to generate nhood enrichment plot: %s", e)
+
+        # Spatial scatter colored by cluster
+        try:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            clusters_cat = adata.obs['cluster'].cat.categories
+            n_cats = len(clusters_cat)
+            cmap = plt.cm.get_cmap('tab20' if n_cats > 10 else 'tab10', n_cats)
+            for idx, cl in enumerate(clusters_cat):
+                mask = adata.obs['cluster'] == cl
+                ax.scatter(spatial_data[mask, 0], spatial_data[mask, 1],
+                           c=[cmap(idx)], s=1, alpha=0.5, label=str(cl),
+                           rasterized=True)
+            ax.set_xlabel('X (pixels)')
+            ax.set_ylabel('Y (pixels)')
+            ax.set_aspect('equal')
+            ax.invert_yaxis()  # image coordinates: Y increases downward
+            ax.set_title('Spatial distribution by cluster')
+            ax.legend(title='Cluster', markerscale=5, fontsize='small',
+                      loc='center left', bbox_to_anchor=(1, 0.5))
+            spatial_path = os.path.join(plot_dir, 'spatial_scatter.png')
+            fig.savefig(spatial_path, dpi=150, bbox_inches='tight')
+            plt.close('all')
+            plot_paths['spatial_scatter'] = spatial_path
+            logger.info("Saved spatial scatter: %s", spatial_path)
+        except Exception as e:
+            logger.warning("Failed to generate spatial scatter plot: %s", e)
 
     if plot_paths:
         task.outputs['plot_paths'] = json.dumps(plot_paths)

@@ -46,6 +46,8 @@ public class ClusteringDialog {
     private ComboBox<Algorithm> algorithmCombo;
     private VBox algorithmParamsBox;
     private CheckBox generatePlotsCheck;
+    private CheckBox spatialAnalysisCheck;
+    private CheckBox batchCorrectionCheck;
     private Label statusLabel;
     private ProgressBar progressBar;
     private Button runButton;
@@ -256,12 +258,24 @@ public class ClusteringDialog {
         return pane;
     }
 
-    private HBox createAnalysisSection() {
+    private VBox createAnalysisSection() {
         generatePlotsCheck = new CheckBox("Generate analysis plots (marker ranking, PAGA, dotplot)");
         generatePlotsCheck.setSelected(true);
 
-        HBox box = new HBox(10, generatePlotsCheck);
-        box.setAlignment(Pos.CENTER_LEFT);
+        spatialAnalysisCheck = new CheckBox("Spatial analysis (neighborhood enrichment, Moran's I)");
+        spatialAnalysisCheck.setSelected(false);
+
+        batchCorrectionCheck = new CheckBox("Batch correction (Harmony) - for multi-image clustering");
+        batchCorrectionCheck.setSelected(false);
+        batchCorrectionCheck.setDisable(true);
+
+        // Enable batch correction only when "All project images" is selected
+        scopeAllImages.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            batchCorrectionCheck.setDisable(!newVal);
+            if (!newVal) batchCorrectionCheck.setSelected(false);
+        });
+
+        VBox box = new VBox(5, generatePlotsCheck, spatialAnalysisCheck, batchCorrectionCheck);
         return box;
     }
 
@@ -341,6 +355,8 @@ public class ClusteringDialog {
 
         // Analysis options
         config.setGeneratePlots(generatePlotsCheck.isSelected());
+        config.setEnableSpatialAnalysis(spatialAnalysisCheck.isSelected());
+        config.setEnableBatchCorrection(batchCorrectionCheck.isSelected());
 
         // Selected measurements
         List<String> selected = new ArrayList<>(measurementList.getSelectionModel().getSelectedItems());
@@ -427,7 +443,8 @@ public class ClusteringDialog {
                     Dialogs.showInfoNotification("PyClustering",
                             "Clustering complete: " + result.getNClusters() + " clusters found.");
 
-                    if (result.hasPlots() || result.hasMarkerRankings()) {
+                    if (result.hasPlots() || result.hasMarkerRankings()
+                            || result.hasSpatialAutocorr()) {
                         showResultsDialog(result);
                     }
                 });
@@ -468,6 +485,16 @@ public class ClusteringDialog {
             tabPane.getTabs().add(tab);
         }
 
+        // Spatial autocorrelation tab
+        if (result.hasSpatialAutocorr()) {
+            TextArea autocorrText = new TextArea(formatSpatialAutocorr(result));
+            autocorrText.setEditable(false);
+            autocorrText.setStyle("-fx-font-family: monospace;");
+            Tab tab = new Tab("Spatial Autocorrelation", autocorrText);
+            tab.setClosable(false);
+            tabPane.getTabs().add(tab);
+        }
+
         // Plot tabs
         if (result.hasPlots()) {
             for (Map.Entry<String, String> entry : result.getPlotPaths().entrySet()) {
@@ -486,6 +513,8 @@ public class ClusteringDialog {
                         case "matrixplot" -> "Matrix Plot";
                         case "paga" -> "PAGA Graph";
                         case "embedding" -> "Embedding";
+                        case "nhood_enrichment" -> "Neighborhood Enrichment";
+                        case "spatial_scatter" -> "Spatial Scatter";
                         default -> entry.getKey();
                     };
                     Tab tab = new Tab(tabName, sp);
@@ -502,6 +531,41 @@ public class ClusteringDialog {
         dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
 
         dialog.show();
+    }
+
+    private String formatSpatialAutocorr(ClusteringResult result) {
+        String json = result.getSpatialAutocorrJson();
+        if (json == null) return "No spatial autocorrelation data available.";
+
+        try {
+            com.google.gson.Gson gson = new com.google.gson.Gson();
+            java.lang.reflect.Type type = new com.google.gson.reflect.TypeToken<
+                    Map<String, Map<String, Double>>>(){}.getType();
+            Map<String, Map<String, Double>> autocorr = gson.fromJson(json, type);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("Moran's I spatial autocorrelation per marker\n");
+            sb.append("Higher I = stronger spatial clustering of expression\n\n");
+            sb.append(String.format("%-35s %10s %12s%n", "Marker", "Moran's I", "P-value"));
+            sb.append("-".repeat(59)).append("\n");
+
+            // Sort by Moran's I descending
+            autocorr.entrySet().stream()
+                    .sorted((a, b) -> Double.compare(
+                            b.getValue().getOrDefault("I", 0.0),
+                            a.getValue().getOrDefault("I", 0.0)))
+                    .forEach(entry -> {
+                        double mI = entry.getValue().getOrDefault("I", Double.NaN);
+                        double pval = entry.getValue().getOrDefault("pval", Double.NaN);
+                        sb.append(String.format("%-35s %10.4f %12.2e%n",
+                                entry.getKey(), mI, pval));
+                    });
+
+            return sb.toString();
+        } catch (Exception e) {
+            logger.warn("Failed to format spatial autocorrelation: {}", e.getMessage());
+            return json;
+        }
     }
 
     private String formatMarkerRankings(ClusteringResult result) {

@@ -49,4 +49,19 @@ public class ClusteringResult {
     public Map<String, String> getPlotPaths() { return plotPaths; }
     public void setPlotPaths(Map<String, String> paths) { this.plotPaths = paths; }
     public boolean hasPlots() { return plotPaths != null && !plotPaths.isEmpty(); }
+
+    // Spatial analysis results
+    private double[][] nhoodEnrichment;
+    private String[] nhoodClusterNames;
+    private String spatialAutocorrJson;
+
+    public double[][] getNhoodEnrichment() { return nhoodEnrichment; }
+    public void setNhoodEnrichment(double[][] m) { this.nhoodEnrichment = m; }
+    public String[] getNhoodClusterNames() { return nhoodClusterNames; }
+    public void setNhoodClusterNames(String[] names) { this.nhoodClusterNames = names; }
+    public boolean hasNhoodEnrichment() { return nhoodEnrichment != null; }
+
+    public String getSpatialAutocorrJson() { return spatialAutocorrJson; }
+    public void setSpatialAutocorrJson(String json) { this.spatialAutocorrJson = json; }
+    public boolean hasSpatialAutocorr() { return spatialAutocorrJson != null; }
 }
