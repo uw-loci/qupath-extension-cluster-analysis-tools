@@ -7,7 +7,7 @@ plugins {
 qupathExtension {
     name = "qupath-extension-pyclustering"
     group = "io.github.michaelsnelson"
-    version = "0.1.0-SNAPSHOT"
+    version = "0.1.0-rc1"
     description = "Python-powered clustering and phenotyping for highly multiplexed imaging data in QuPath."
     automaticModule = "io.github.michaelsnelson.extension.pyclustering"
 }
