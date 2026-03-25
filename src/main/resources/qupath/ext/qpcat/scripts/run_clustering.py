@@ -82,6 +82,45 @@ else:
 
 logger.info("Normalization: %s", normalization)
 
+# 2a. Spatial feature smoothing (graph convolution on k-nearest neighbor graph)
+# Approach inspired by LazySlide (MIT License)
+# Zheng, Y. et al. Nature Methods (2026). https://doi.org/10.1038/s41592-026-03044-7
+try:
+    do_spatial_smoothing = enable_spatial_smoothing
+except NameError:
+    do_spatial_smoothing = False
+try:
+    smoothing_iters = spatial_smoothing_iterations
+except NameError:
+    smoothing_iters = 1
+
+if do_spatial_smoothing and has_spatial_coords:
+    task.update("Applying spatial feature smoothing...")
+    from sklearn.neighbors import NearestNeighbors
+    import scipy.sparse as sp
+
+    n = len(spatial_data)
+    k = min(15, n - 1)
+    nn = NearestNeighbors(n_neighbors=k, metric='euclidean')
+    nn.fit(spatial_data)
+    distances, indices = nn.kneighbors(spatial_data)
+
+    # Build row-normalized adjacency matrix (A + I)
+    rows = np.repeat(np.arange(n), k)
+    cols = indices.ravel()
+    adj = sp.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n))
+    adj = adj + sp.eye(n)
+    row_sums = np.array(adj.sum(axis=1)).flatten()
+    adj_norm = sp.diags(1.0 / row_sums) @ adj
+
+    smoothed = df_norm.values.copy()
+    for it in range(smoothing_iters):
+        smoothed = adj_norm @ smoothed
+    df_norm = pd.DataFrame(smoothed, columns=df_norm.columns)
+    logger.info("Spatial smoothing applied: k=%d, iterations=%d", k, smoothing_iters)
+elif do_spatial_smoothing and not has_spatial_coords:
+    logger.warning("Spatial smoothing requested but no spatial coordinates available, skipping")
+
 # 2b. Batch correction (Harmony, for multi-image clustering)
 try:
     do_batch = enable_batch_correction

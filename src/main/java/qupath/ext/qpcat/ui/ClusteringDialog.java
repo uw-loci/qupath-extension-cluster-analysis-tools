@@ -50,6 +50,8 @@ public class ClusteringDialog {
     private VBox algorithmParamsBox;
     private CheckBox generatePlotsCheck;
     private CheckBox spatialAnalysisCheck;
+    private CheckBox spatialSmoothingCheck;
+    private Spinner<Integer> smoothingIterationsSpinner;
     private CheckBox batchCorrectionCheck;
     private Label statusLabel;
     private ProgressBar progressBar;
@@ -382,6 +384,33 @@ public class ClusteringDialog {
                 + "Powered by squidpy (Palla et al. 2022, Nature Methods).\n"
                 + "See documentation/REFERENCES.md for citations."));
 
+        spatialSmoothingCheck = new CheckBox("Spatial feature smoothing");
+        spatialSmoothingCheck.setSelected(false);
+        spatialSmoothingCheck.setTooltip(new Tooltip(
+                "Smooth features using spatial neighbors before clustering.\n"
+                + "Each cell's features are averaged with its spatial neighbors\n"
+                + "via graph convolution on a k-nearest neighbor graph.\n"
+                + "Makes any algorithm spatially-aware (not just BANKSY).\n"
+                + "Approach inspired by LazySlide (Zheng et al. 2026, Nature Methods)."));
+
+        smoothingIterationsSpinner = new Spinner<>(1, 5, 1);
+        smoothingIterationsSpinner.setEditable(true);
+        smoothingIterationsSpinner.setPrefWidth(60);
+        smoothingIterationsSpinner.setDisable(true);
+        smoothingIterationsSpinner.setTooltip(new Tooltip(
+                "Number of smoothing iterations.\n"
+                + "1 = average with direct neighbors only.\n"
+                + "2+ = incorporate increasingly distant neighbors.\n"
+                + "Default: 1. Higher values produce smoother results."));
+
+        spatialSmoothingCheck.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            smoothingIterationsSpinner.setDisable(!newVal);
+        });
+
+        HBox smoothingRow = new HBox(8, spatialSmoothingCheck,
+                new Label("Iterations:"), smoothingIterationsSpinner);
+        smoothingRow.setAlignment(Pos.CENTER_LEFT);
+
         batchCorrectionCheck = new CheckBox("Batch correction (Harmony) - for multi-image clustering");
         batchCorrectionCheck.setSelected(false);
         batchCorrectionCheck.setDisable(true);
@@ -397,7 +426,8 @@ public class ClusteringDialog {
             if (!newVal) batchCorrectionCheck.setSelected(false);
         });
 
-        VBox box = new VBox(5, generatePlotsCheck, spatialAnalysisCheck, batchCorrectionCheck);
+        VBox box = new VBox(5, generatePlotsCheck, spatialAnalysisCheck,
+                smoothingRow, batchCorrectionCheck);
         return box;
     }
 
@@ -490,6 +520,8 @@ public class ClusteringDialog {
         // Analysis options
         config.setGeneratePlots(generatePlotsCheck.isSelected());
         config.setEnableSpatialAnalysis(spatialAnalysisCheck.isSelected());
+        config.setEnableSpatialSmoothing(spatialSmoothingCheck.isSelected());
+        config.setSpatialSmoothingIterations(smoothingIterationsSpinner.getValue());
         config.setEnableBatchCorrection(batchCorrectionCheck.isSelected());
 
         // Selected measurements
@@ -697,6 +729,8 @@ public class ClusteringDialog {
         // Analysis options
         generatePlotsCheck.setSelected(config.isGeneratePlots());
         spatialAnalysisCheck.setSelected(config.isEnableSpatialAnalysis());
+        spatialSmoothingCheck.setSelected(config.isEnableSpatialSmoothing());
+        smoothingIterationsSpinner.getValueFactory().setValue(config.getSpatialSmoothingIterations());
         batchCorrectionCheck.setSelected(config.isEnableBatchCorrection());
 
         // Measurements - select matching items

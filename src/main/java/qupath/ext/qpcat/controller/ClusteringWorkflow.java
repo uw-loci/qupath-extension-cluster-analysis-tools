@@ -32,6 +32,10 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import qupath.lib.images.servers.ImageServer;
+import qupath.lib.regions.ImagePlane;
+import qupath.lib.regions.RegionRequest;
+
 import qupath.lib.projects.ProjectImageEntry;
 
 /**
@@ -611,9 +615,10 @@ public class ClusteringWorkflow {
             }
         }
 
-        // Create spatial coordinates NDArray if spatial analysis is enabled or BANKSY algorithm
+        // Create spatial coordinates NDArray if spatial analysis, smoothing, or BANKSY
         NDArray spatialCoordsNd = null;
         boolean needsSpatialCoords = config.isEnableSpatialAnalysis()
+                || config.isEnableSpatialSmoothing()
                 || config.getAlgorithm() == ClusteringConfig.Algorithm.BANKSY;
         if (needsSpatialCoords) {
             double[][] centroids = MeasurementExtractor.extractCentroids(
@@ -655,6 +660,10 @@ public class ClusteringWorkflow {
         }
         if (spatialCoordsNd != null) {
             inputs.put("spatial_coords", spatialCoordsNd);
+        }
+        if (config.isEnableSpatialSmoothing()) {
+            inputs.put("enable_spatial_smoothing", true);
+            inputs.put("spatial_smoothing_iterations", config.getSpatialSmoothingIterations());
         }
         if (batchLabels != null) {
             inputs.put("enable_batch_correction", true);
@@ -1069,6 +1078,336 @@ public class ClusteringWorkflow {
             }
         }
         return null;
+    }
+
+    // ==================== Shared Tile Reading ====================
+
+    /**
+     * Reads RGB tile images centered on each detection's centroid and packs them
+     * into a flat byte array suitable for transfer to Python via Appose NDArray.
+     * <p>
+     * The output array has shape (nDetections, tileSize, tileSize, 3) in row-major order,
+     * with each pixel stored as R, G, B bytes. Out-of-bounds regions are zero-filled.
+     *
+     * @param server           the image server to read tiles from
+     * @param detections       detection objects whose centroids define tile centers
+     * @param tileSize         side length of each square tile in pixels
+     * @param progressCallback optional progress callback (may be null)
+     * @return packed RGB byte array of all tiles
+     */
+    private byte[] readTilesAroundCentroids(
+            ImageServer<BufferedImage> server,
+            List<PathObject> detections,
+            int tileSize,
+            Consumer<String> progressCallback) {
+
+        int nCells = detections.size();
+        int halfTile = tileSize / 2;
+        byte[] tileData = new byte[nCells * tileSize * tileSize * 3];
+
+        for (int i = 0; i < nCells; i++) {
+            PathObject det = detections.get(i);
+            double cx = det.getROI().getCentroidX();
+            double cy = det.getROI().getCentroidY();
+
+            int x = Math.max(0, (int) cx - halfTile);
+            int y = Math.max(0, (int) cy - halfTile);
+
+            // Clamp to image bounds
+            x = Math.min(x, Math.max(0, server.getWidth() - tileSize));
+            y = Math.min(y, Math.max(0, server.getHeight() - tileSize));
+
+            int readW = Math.min(tileSize, server.getWidth() - x);
+            int readH = Math.min(tileSize, server.getHeight() - y);
+
+            try {
+                RegionRequest request = RegionRequest.createInstance(
+                        server.getPath(), 1.0, x, y, readW, readH);
+                BufferedImage tile = server.readRegion(request);
+
+                int offset = i * tileSize * tileSize * 3;
+                for (int ty = 0; ty < tileSize; ty++) {
+                    for (int tx = 0; tx < tileSize; tx++) {
+                        if (tx < tile.getWidth() && ty < tile.getHeight()) {
+                            int rgb = tile.getRGB(tx, ty);
+                            tileData[offset++] = (byte) ((rgb >> 16) & 0xFF);
+                            tileData[offset++] = (byte) ((rgb >> 8) & 0xFF);
+                            tileData[offset++] = (byte) (rgb & 0xFF);
+                        } else {
+                            tileData[offset++] = 0;
+                            tileData[offset++] = 0;
+                            tileData[offset++] = 0;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to read tile for detection {}: {}", i, e.getMessage());
+            }
+
+            if ((i + 1) % 500 == 0) {
+                report(progressCallback, "Read " + (i + 1) + "/" + nCells + " tiles...");
+            }
+        }
+
+        return tileData;
+    }
+
+    // ==================== Feature Extraction (Foundation Models) ====================
+
+    /**
+     * Extracts foundation model features from tile images around each cell centroid.
+     * Features are stored as measurements (FM_0, FM_1, ...) on each detection.
+     * <p>
+     * Integration approach inspired by LazySlide (MIT License).
+     * Zheng, Y. et al. Nature Methods (2026).
+     * <a href="https://doi.org/10.1038/s41592-026-03044-7">doi:10.1038/s41592-026-03044-7</a>
+     *
+     * @param modelName        foundation model identifier
+     * @param tileSize         tile size in pixels around each centroid
+     * @param batchSize        inference batch size
+     * @param hfToken          HuggingFace auth token (may be null)
+     * @param progressCallback optional progress callback
+     * @return embedding dimensionality
+     * @throws IOException if extraction fails
+     */
+    public int runFeatureExtraction(String modelName, int tileSize, int batchSize,
+                                     String hfToken,
+                                     Consumer<String> progressCallback) throws IOException {
+
+        long startTime = System.currentTimeMillis();
+        report(progressCallback, "Preparing tile images...");
+
+        ImageData<BufferedImage> imageData = qupath.getImageData();
+        if (imageData == null) throw new IOException("No image is open");
+
+        ImageServer<BufferedImage> server = imageData.getServer();
+        List<PathObject> detections = new ArrayList<>(
+                imageData.getHierarchy().getDetectionObjects());
+
+        if (detections.isEmpty())
+            throw new IOException("No detections found. Run cell detection first.");
+
+        int nCells = detections.size();
+
+        report(progressCallback, "Reading " + nCells + " tile images (" + tileSize + "x" + tileSize + ")...");
+        byte[] tileData = readTilesAroundCentroids(server, detections, tileSize, progressCallback);
+
+        report(progressCallback, "Sending tiles to Python for feature extraction...");
+
+        // Create NDArray for tile data
+        int embedDim;
+        try {
+            embedDim = ApposeClusteringService.withExtensionClassLoader(() -> {
+                NDArray.Shape shape = new NDArray.Shape(
+                        NDArray.Shape.Order.C_ORDER, nCells, tileSize, tileSize, 3);
+                NDArray tilesNd = new NDArray(NDArray.DType.INT8, shape);
+                tilesNd.buffer().put(tileData);
+
+                Map<String, Object> inputs = new HashMap<>();
+                inputs.put("tile_images", tilesNd);
+                inputs.put("model_name", modelName);
+                inputs.put("batch_size", batchSize);
+                if (hfToken != null) {
+                    inputs.put("hf_token", hfToken);
+                }
+
+                ApposeClusteringService service = ApposeClusteringService.getInstance();
+                Task task = service.runTaskWithListener("extract_features", inputs, event -> {
+                    if (event.responseType == ResponseType.UPDATE && event.message != null) {
+                        report(progressCallback, event.message);
+                    }
+                });
+
+                // Parse results
+                NDArray featuresNd = (NDArray) task.outputs.get("features");
+                int dim = ((Number) task.outputs.get("embed_dim")).intValue();
+
+                // Read features into array
+                float[] featuresBuf = new float[nCells * dim];
+                featuresNd.buffer().asFloatBuffer().get(featuresBuf);
+
+                // Apply features as measurements on detections
+                report(progressCallback, "Applying " + dim + "-d features as measurements...");
+                for (int i = 0; i < nCells; i++) {
+                    PathObject det = detections.get(i);
+                    var ml = det.getMeasurementList();
+                    for (int d = 0; d < dim; d++) {
+                        ml.put("FM_" + d, featuresBuf[i * dim + d]);
+                    }
+                }
+
+                // Cleanup
+                try { tilesNd.close(); } catch (Exception ignored) {}
+                try { featuresNd.close(); } catch (Exception ignored) {}
+
+                return dim;
+            });
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Feature extraction failed: " + e.getMessage(), e);
+        }
+
+        // Fire hierarchy update
+        Platform.runLater(() -> {
+            ImageData<BufferedImage> currentImageData = qupath.getImageData();
+            if (currentImageData != null) {
+                currentImageData.getHierarchy().fireHierarchyChangedEvent(this);
+            }
+        });
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        String msg = "Feature extraction: " + embedDim + "-dim from " + modelName
+                + " for " + nCells + " cells";
+        report(progressCallback, msg);
+        OperationLogger.getInstance().logOperation("FEATURE_EXTRACTION",
+                Map.of("Model", modelName,
+                       "TileSize", String.valueOf(tileSize),
+                       "EmbedDim", String.valueOf(embedDim),
+                       "Cells", String.valueOf(nCells)),
+                msg, elapsed);
+
+        return embedDim;
+    }
+
+    // ==================== Zero-Shot Phenotyping ====================
+
+    /**
+     * Runs zero-shot phenotyping using a vision-language model (BiomedCLIP).
+     * Tile images around cell centroids are scored against text prompts via
+     * cosine similarity.
+     * <p>
+     * Uses BiomedCLIP (MIT License, Microsoft).
+     * Approach inspired by LazySlide (MIT License).
+     * Zheng, Y. et al. Nature Methods (2026).
+     * <a href="https://doi.org/10.1038/s41592-026-03044-7">doi:10.1038/s41592-026-03044-7</a>
+     *
+     * @param phenotypeNames   display names for each phenotype
+     * @param phenotypePrompts text prompts for each phenotype
+     * @param tileSize         tile size in pixels
+     * @param batchSize        inference batch size
+     * @param minSimilarity    minimum cosine similarity for assignment
+     * @param mode             "argmax" or "scores"
+     * @param progressCallback optional progress callback
+     * @return result map with phenotype_counts, labels, etc.
+     * @throws IOException if phenotyping fails
+     */
+    public Map<String, Object> runZeroShotPhenotyping(
+            List<String> phenotypeNames,
+            List<String> phenotypePrompts,
+            int tileSize, int batchSize,
+            double minSimilarity, String mode,
+            Consumer<String> progressCallback) throws IOException {
+
+        long startTime = System.currentTimeMillis();
+        report(progressCallback, "Preparing tile images for zero-shot phenotyping...");
+
+        ImageData<BufferedImage> imageData = qupath.getImageData();
+        if (imageData == null) throw new IOException("No image is open");
+
+        ImageServer<BufferedImage> server = imageData.getServer();
+        List<PathObject> detections = new ArrayList<>(
+                imageData.getHierarchy().getDetectionObjects());
+
+        if (detections.isEmpty())
+            throw new IOException("No detections found. Run cell detection first.");
+
+        int nCells = detections.size();
+
+        report(progressCallback, "Reading " + nCells + " tile images...");
+        byte[] tileData = readTilesAroundCentroids(server, detections, tileSize, progressCallback);
+
+        report(progressCallback, "Running zero-shot phenotyping via BiomedCLIP...");
+
+        Map<String, Object> resultMap = new HashMap<>();
+        try {
+            ApposeClusteringService.withExtensionClassLoader(() -> {
+                NDArray.Shape shape = new NDArray.Shape(
+                        NDArray.Shape.Order.C_ORDER, nCells, tileSize, tileSize, 3);
+                NDArray tilesNd = new NDArray(NDArray.DType.INT8, shape);
+                tilesNd.buffer().put(tileData);
+
+                Map<String, Object> inputs = new HashMap<>();
+                inputs.put("tile_images", tilesNd);
+                inputs.put("phenotype_prompts", phenotypePrompts);
+                inputs.put("phenotype_names", phenotypeNames);
+                inputs.put("batch_size", batchSize);
+                inputs.put("min_similarity", minSimilarity);
+                inputs.put("assignment_mode", mode);
+
+                ApposeClusteringService service = ApposeClusteringService.getInstance();
+                Task task = service.runTaskWithListener(
+                        "zero_shot_phenotyping", inputs, event -> {
+                    if (event.responseType == ResponseType.UPDATE && event.message != null) {
+                        report(progressCallback, event.message);
+                    }
+                });
+
+                // Parse results
+                NDArray labelsNd = (NDArray) task.outputs.get("phenotype_labels");
+                int[] labels = new int[nCells];
+                labelsNd.buffer().asIntBuffer().get(labels);
+
+                String countsJson = String.valueOf(task.outputs.get("phenotype_counts"));
+                String namesJson = String.valueOf(task.outputs.get("phenotype_names_out"));
+                resultMap.put("phenotype_counts", countsJson);
+                resultMap.put("labels", labels);
+
+                // Apply labels as PathClass on detections
+                report(progressCallback, "Applying phenotype labels...");
+                ResultApplier applier = new ResultApplier();
+                applier.applyPhenotypeLabels(detections, labels,
+                        phenotypeNames.toArray(new String[0]));
+
+                // If soft mode, also store similarity scores as measurements
+                if ("scores".equals(mode)) {
+                    NDArray simNd = (NDArray) task.outputs.get("similarity_scores");
+                    if (simNd != null) {
+                        int nPhenotypes = phenotypeNames.size();
+                        float[] simBuf = new float[nCells * nPhenotypes];
+                        simNd.buffer().asFloatBuffer().get(simBuf);
+
+                        for (int i = 0; i < nCells; i++) {
+                            var ml = detections.get(i).getMeasurementList();
+                            for (int p = 0; p < nPhenotypes; p++) {
+                                ml.put("ZS_" + phenotypeNames.get(p),
+                                        simBuf[i * nPhenotypes + p]);
+                            }
+                        }
+                        try { simNd.close(); } catch (Exception ignored) {}
+                    }
+                }
+
+                try { tilesNd.close(); } catch (Exception ignored) {}
+                try { labelsNd.close(); } catch (Exception ignored) {}
+                return null;
+            });
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Zero-shot phenotyping failed: " + e.getMessage(), e);
+        }
+
+        // Fire hierarchy update
+        Platform.runLater(() -> {
+            ImageData<BufferedImage> currentImageData = qupath.getImageData();
+            if (currentImageData != null) {
+                currentImageData.getHierarchy().fireHierarchyChangedEvent(this);
+            }
+        });
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        String msg = "Zero-shot: " + phenotypeNames.size() + " phenotypes for " + nCells + " cells";
+        report(progressCallback, msg);
+        OperationLogger.getInstance().logOperation("ZERO_SHOT_PHENOTYPING",
+                Map.of("Phenotypes", String.valueOf(phenotypeNames.size()),
+                       "TileSize", String.valueOf(tileSize),
+                       "MinSimilarity", String.valueOf(minSimilarity),
+                       "Mode", mode,
+                       "Cells", String.valueOf(nCells)),
+                msg, elapsed);
+
+        return resultMap;
     }
 
     private static void report(Consumer<String> callback, String message) {

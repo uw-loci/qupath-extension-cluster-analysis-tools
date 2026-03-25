@@ -308,6 +308,131 @@ Open-source platform for bioimage analysis, with emphasis on digital pathology a
 
 ---
 
+## Foundation Model Feature Extraction
+
+### LazySlide
+
+Accessible and interoperable framework for whole-slide image analysis with foundation models. Used by QP-CAT for feature extraction.
+
+**Original paper:**
+> Zheng Y, et al. "LazySlide: accessible and interoperable whole-slide image analysis." *Nature Methods* (2026).
+> https://doi.org/10.1038/s41592-026-03044-7
+
+**Used in:** Foundation model feature extraction pipeline
+
+---
+
+### H-optimus-0
+
+Vision transformer foundation model for pathology, pre-trained on large-scale histopathology data.
+
+**Model card:**
+> Bioptimus. "H-optimus-0." HuggingFace.
+> https://huggingface.co/bioptimus/H-optimus-0
+
+**License:** Apache 2.0 (gated -- requires HuggingFace token)
+
+**Used in:** Foundation model feature extraction (1536-dim embeddings)
+
+---
+
+### Virchow
+
+Pathology foundation model pre-trained on diverse histopathology data.
+
+**Model card:**
+> Paige AI. "Virchow." HuggingFace.
+> https://huggingface.co/paige-ai/Virchow
+
+**License:** Apache 2.0 (gated -- requires HuggingFace token)
+
+**Used in:** Foundation model feature extraction (2560-dim embeddings)
+
+---
+
+### Hibou
+
+Pathology foundation models available in base (B) and large (L) variants.
+
+**Model cards:**
+> HistAI. "Hibou-B." HuggingFace.
+> https://huggingface.co/histai/hibou-B
+
+> HistAI. "Hibou-L." HuggingFace.
+> https://huggingface.co/histai/hibou-L
+
+**License:** Apache 2.0 (gated -- requires HuggingFace token)
+
+**Used in:** Foundation model feature extraction (768-dim / 1024-dim embeddings)
+
+---
+
+### Midnight
+
+Pathology foundation model from kaiko.ai.
+
+**Model card:**
+> kaiko.ai. "Midnight." HuggingFace.
+> https://huggingface.co/kaiko-ai/midnight
+
+**License:** Apache 2.0
+
+**Used in:** Foundation model feature extraction (768-dim embeddings)
+
+---
+
+### DINOv2
+
+Self-supervised vision transformer producing robust general-purpose visual features.
+
+**Original paper:**
+> Oquab M, Darcet T, Moutakanni T, et al. "DINOv2: Learning Robust Visual Features without Supervision." *Transactions on Machine Learning Research* (2024).
+> https://doi.org/10.48550/arXiv.2304.07193
+
+**Model card (Large variant):**
+> Meta AI. "DINOv2-Large." HuggingFace.
+> https://huggingface.co/facebook/dinov2-large
+
+**License:** Apache 2.0
+
+**Used in:** Foundation model feature extraction (1024-dim embeddings)
+
+---
+
+## Zero-Shot Phenotyping
+
+### BiomedCLIP
+
+Biomedical vision-language foundation model for zero-shot image classification, trained on PubMed figure-caption pairs.
+
+**Original paper:**
+> Zhang S, Xu Y, Usuyama N, et al. "BiomedCLIP: a multimodal biomedical foundation model pretrained from fifteen million scientific image-text pairs." *arXiv* 2303.00915 (2023).
+> https://doi.org/10.48550/arXiv.2303.00915
+
+**Model card:**
+> Microsoft. "BiomedCLIP-PubMedBERT_256-vit_base_patch16_224." HuggingFace.
+> https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
+
+**License:** MIT
+
+**Used in:** Zero-shot phenotyping (vision-language cell classification via text prompts)
+
+---
+
+## Spatial Feature Smoothing
+
+### Graph Convolution for Spatial Smoothing
+
+Graph convolution on spatial neighbor graphs is a standard technique in graph neural networks, applied here as a simple pre-processing step to smooth cell features using spatial proximity.
+
+**Foundational reference (spectral graph convolution):**
+> Kipf TN, Welling M. "Semi-Supervised Classification with Graph Convolutional Networks." *Proceedings of the 5th International Conference on Learning Representations (ICLR)* (2017).
+> https://doi.org/10.48550/arXiv.1609.02907
+
+**Used in:** Clustering dialog (spatial feature smoothing pre-step with row-normalized k-NN adjacency)
+
+---
+
 ## Key Application Papers (Multiplexed Imaging)
 
 These papers demonstrate workflows similar to QP-CAT's capabilities applied to multiplexed tissue imaging:

@@ -17,6 +17,9 @@ QP-CAT embeds a full scientific Python environment (via [Appose](https://github.
 ## Features
 
 - **7 clustering algorithms** -- Leiden, KMeans, HDBSCAN, Agglomerative, MiniBatch KMeans, Gaussian Mixture, and BANKSY (spatially-aware)
+- **Spatial feature smoothing** -- graph convolution pre-step that smooths features using spatial neighbors before clustering, making any algorithm spatially-aware
+- **Foundation model feature extraction** -- extracts tile-level morphological embeddings from vision foundation models (H-optimus-0, Virchow, Hibou-B/L, Midnight, DINOv2-Large) via [LazySlide](https://doi.org/10.1038/s41592-026-03044-7)
+- **Zero-shot phenotyping** -- assigns cell phenotypes using natural language text prompts and [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) vision-language model (MIT License, Microsoft)
 - **Rule-based phenotyping** with per-marker gating and auto-threshold computation (Triangle, GMM, Gamma methods)
 - **Dimensionality reduction** -- UMAP, PCA, t-SNE with interactive scatter visualization
 - **Spatial analysis** -- neighborhood enrichment and Moran's I autocorrelation via squidpy
@@ -34,7 +37,8 @@ QP-CAT embeds a full scientific Python environment (via [Appose](https://github.
 - **Java** 21+
 - **Internet connection** for initial environment setup (~1.5-2.5 GB download)
 - **Disk space** ~2.5 GB for the Python environment
-- No GPU required -- all operations run on CPU
+- No GPU required -- all operations run on CPU (foundation model extraction benefits from GPU but works on CPU)
+- **HuggingFace account** (optional) -- required only for gated models (H-optimus-0, Virchow, Hibou); set your auth token in the dialog
 
 ---
 
@@ -156,6 +160,66 @@ Parameters:
 - **k_geom**: Number of spatial nearest neighbors
 - **resolution**: Leiden resolution for the final clustering step
 
+### Spatial Feature Smoothing
+
+Spatial feature smoothing is a graph convolution pre-step that can be enabled for **any** clustering algorithm. When enabled, each cell's features are smoothed with its spatial neighbors before clustering, encouraging nearby cells to receive similar cluster assignments.
+
+How it works:
+1. A k-nearest neighbor graph is built from cell centroid coordinates
+2. The adjacency matrix is row-normalized so each cell's neighbors contribute equally
+3. Each cell's feature vector is replaced by a weighted average of itself and its neighbors
+4. The smoothed features are then passed to the selected clustering algorithm
+
+Enable the **"Spatial feature smoothing"** checkbox in the clustering dialog. The parameter **k** controls the number of spatial nearest neighbors (default 15).
+
+This is a lighter-weight alternative to BANKSY when you want spatial awareness without switching to a fully spatial algorithm.
+
+---
+
+## Foundation Model Feature Extraction
+
+**Extensions > QP-CAT > Extract Foundation Model Features...** extracts tile-level morphological embeddings from pre-trained vision foundation models and stores them as per-detection measurements (`FM_0`, `FM_1`, ..., `FM_N`).
+
+### Supported Models
+
+| Model | Developer | License | Embedding Dim | Gated? |
+|-------|-----------|---------|:---:|:---:|
+| **H-optimus-0** | Bioptimus | Apache 2.0 | 1536 | Yes |
+| **Virchow** | Paige AI | Apache 2.0 | 2560 | Yes |
+| **Hibou-B** | HistAI | Apache 2.0 | 768 | Yes |
+| **Hibou-L** | HistAI | Apache 2.0 | 1024 | Yes |
+| **Midnight** | kaiko.ai | Apache 2.0 | 768 | No |
+| **DINOv2-Large** | Meta AI | Apache 2.0 | 1024 | No |
+
+All models are downloaded on-demand from HuggingFace and cached locally -- they are not bundled with the extension. Only models with commercially permissive licenses (Apache 2.0) are included.
+
+**Gated models** (H-optimus-0, Virchow, Hibou) require a HuggingFace account and auth token. Accept the model's license on its HuggingFace page, then enter your token in the extraction dialog.
+
+Foundation model features capture rich morphological information from the image tile surrounding each cell. They can be used as input measurements for clustering (instead of or alongside channel intensity measurements), enabling morphology-driven cell grouping.
+
+Feature extraction is powered by [LazySlide](https://doi.org/10.1038/s41592-026-03044-7).
+
+---
+
+## Zero-Shot Phenotyping
+
+**Extensions > QP-CAT > Zero-Shot Phenotyping (BiomedCLIP)...** assigns cell phenotypes using natural language text prompts -- no marker gating rules or training data required.
+
+### How It Works
+
+1. Image tiles are extracted around each cell detection
+2. [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) (MIT License, Microsoft) computes vision-language similarity between each tile and your text prompts
+3. Each cell is assigned the phenotype whose text prompt best matches its image tile
+4. A confidence score is stored alongside each assignment
+
+### Usage
+
+1. Open the dialog and enter phenotype text prompts, one per line (e.g., "lymphocyte", "tumor cell", "stromal cell", "macrophage")
+2. Click **Run**
+3. Each detection receives a classification matching the highest-scoring prompt
+
+BiomedCLIP is downloaded on-demand from HuggingFace and cached locally. It does not require a HuggingFace auth token.
+
 ---
 
 ## Post-Analysis Outputs
@@ -255,6 +319,9 @@ QP-CAT manages its own isolated Python environment via [Appose](https://github.c
 | harmonypy | Batch correction for multi-sample integration |
 | pybanksy | Spatially-aware BANKSY clustering |
 | anndata | AnnData format for interoperability |
+| lazyslide | Foundation model feature extraction |
+| open_clip | BiomedCLIP vision-language model for zero-shot phenotyping |
+| torch | Deep learning runtime for foundation models and BiomedCLIP |
 | scikit-image | Auto-thresholding (Triangle method) |
 | scipy | Gamma distribution fitting for auto-thresholds |
 | matplotlib | Plot generation |
@@ -278,6 +345,8 @@ All items are under **Extensions > QP-CAT**:
 | Setup Clustering Environment | One-time Python environment installation | Internet connection |
 | Run Clustering... | Full clustering dialog with all options | Image + detections |
 | Compute Embedding Only... | UMAP/PCA/t-SNE without clustering | Image + detections |
+| Extract Foundation Model Features... | Extract morphological embeddings from vision models | Image + detections |
+| Zero-Shot Phenotyping (BiomedCLIP)... | Text-prompt cell phenotyping via vision-language model | Image + detections |
 | Run Phenotyping... | Rule-based cell type classification | Image + detections + project |
 | Quick Cluster > Quick Leiden | One-click Leiden clustering with defaults | Image + detections |
 | Quick Cluster > Quick KMeans | One-click KMeans (k=10) | Image + detections |
@@ -391,6 +460,8 @@ Developed at the [Laboratory for Optical and Computational Instrumentation (LOCI
 - [squidpy](https://squidpy.readthedocs.io/) -- Spatial single-cell analysis
 - [BANKSY](https://github.com/prabhakarlab/Banksy_py) -- Spatially-aware clustering
 - [Harmony](https://github.com/immunogenomics/harmony) -- Batch correction
+- [LazySlide](https://github.com/rendeirolab/LazySlide) -- Foundation model feature extraction
+- [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) -- Zero-shot vision-language phenotyping (MIT License, Microsoft)
 
 ---
 

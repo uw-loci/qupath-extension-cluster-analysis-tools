@@ -88,6 +88,8 @@ public class ClusteringConfig {
     private int topNMarkers = 5;
     private boolean enableSpatialAnalysis = false;
     private boolean enableBatchCorrection = false;
+    private boolean enableSpatialSmoothing = false;
+    private int spatialSmoothingIterations = 1;
 
     public ClusteringConfig() {
         // Set sensible defaults
@@ -132,4 +134,10 @@ public class ClusteringConfig {
 
     public boolean isEnableBatchCorrection() { return enableBatchCorrection; }
     public void setEnableBatchCorrection(boolean v) { this.enableBatchCorrection = v; }
+
+    public boolean isEnableSpatialSmoothing() { return enableSpatialSmoothing; }
+    public void setEnableSpatialSmoothing(boolean v) { this.enableSpatialSmoothing = v; }
+
+    public int getSpatialSmoothingIterations() { return spatialSmoothingIterations; }
+    public void setSpatialSmoothingIterations(int v) { this.spatialSmoothingIterations = v; }
 }

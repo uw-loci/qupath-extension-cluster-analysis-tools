@@ -19,9 +19,11 @@ import qupath.ext.qpcat.service.OperationLogger;
 import qupath.ext.qpcat.ui.ClusteringDialog;
 import qupath.ext.qpcat.ui.ClusterManagementDialog;
 import qupath.ext.qpcat.ui.EmbeddingDialog;
+import qupath.ext.qpcat.ui.FeatureExtractionDialog;
 import qupath.ext.qpcat.ui.PhenotypingDialog;
 import qupath.ext.qpcat.ui.PythonConsoleWindow;
 import qupath.ext.qpcat.ui.SetupEnvironmentDialog;
+import qupath.ext.qpcat.ui.ZeroShotPhenotypingDialog;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.common.GeneralTools;
 import qupath.lib.common.Version;
@@ -166,6 +168,38 @@ public class SetupQPCAT implements QuPathExtension, GitHubProject {
                         () -> qupath.getProject() == null,
                         qupath.projectProperty()));
 
+        // Zero-Shot Phenotyping (BiomedCLIP)
+        MenuItem zeroShotItem = new MenuItem(res.getString("menu.zeroShotPhenotyping"));
+        zeroShotItem.setOnAction(e -> {
+            if (qupath.getImageData() == null) {
+                Dialogs.showWarningNotification(EXTENSION_NAME, "No image is open.");
+                return;
+            }
+            if (qupath.getImageData().getHierarchy().getDetectionObjects().isEmpty()) {
+                Dialogs.showWarningNotification(EXTENSION_NAME,
+                        "No detections found. Run cell detection first.");
+                return;
+            }
+            new ZeroShotPhenotypingDialog(qupath).show();
+        });
+        zeroShotItem.visibleProperty().bind(environmentReady);
+
+        // Feature Extraction (Foundation Models)
+        MenuItem featureExtractionItem = new MenuItem(res.getString("menu.featureExtraction"));
+        featureExtractionItem.setOnAction(e -> {
+            if (qupath.getImageData() == null) {
+                Dialogs.showWarningNotification(EXTENSION_NAME, "No image is open.");
+                return;
+            }
+            if (qupath.getImageData().getHierarchy().getDetectionObjects().isEmpty()) {
+                Dialogs.showWarningNotification(EXTENSION_NAME,
+                        "No detections found. Run cell detection first.");
+                return;
+            }
+            new FeatureExtractionDialog(qupath).show();
+        });
+        featureExtractionItem.visibleProperty().bind(environmentReady);
+
         // Compute Embedding Only
         MenuItem computeEmbeddingItem = new MenuItem(res.getString("menu.computeEmbedding"));
         computeEmbeddingItem.setOnAction(e -> {
@@ -250,15 +284,21 @@ public class SetupQPCAT implements QuPathExtension, GitHubProject {
         utilitiesMenu.getItems().addAll(pythonConsoleItem, systemInfoItem,
                 new SeparatorMenuItem(), rebuildItem);
 
+        SeparatorMenuItem sep3 = new SeparatorMenuItem();
+        sep3.visibleProperty().bind(environmentReady);
+
         extensionMenu.getItems().addAll(
                 setupItem,
                 setupSeparator,
                 runClusteringItem,
                 computeEmbeddingItem,
                 runPhenotypingItem,
+                zeroShotItem,
                 sep1,
                 quickClusterMenu,
                 sep2,
+                featureExtractionItem,
+                sep3,
                 manageClustersItem,
                 viewResultsItem,
                 exportAnnDataItem,

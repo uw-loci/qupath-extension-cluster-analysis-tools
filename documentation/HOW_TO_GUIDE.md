@@ -18,11 +18,13 @@ Step-by-step instructions for every workflow in the QP-CAT extension.
 5. [Computing Embeddings Only](#5-computing-embeddings-only)
 6. [Rule-Based Phenotyping](#6-rule-based-phenotyping)
 7. [Using Auto-Thresholding](#7-using-auto-thresholding)
-8. [Managing Clusters (Rename/Merge)](#8-managing-clusters-renamemerge)
-9. [Exporting AnnData](#9-exporting-anndata)
-10. [Saving and Loading Configurations](#10-saving-and-loading-configurations)
-11. [Viewing the Python Console](#11-viewing-the-python-console)
-12. [Reviewing the Operation Audit Trail](#12-reviewing-the-operation-audit-trail)
+8. [Extracting Foundation Model Features](#8-extracting-foundation-model-features)
+9. [Zero-Shot Phenotyping](#9-zero-shot-phenotyping)
+10. [Managing Clusters (Rename/Merge)](#10-managing-clusters-renamemerge)
+11. [Exporting AnnData](#11-exporting-anndata)
+12. [Saving and Loading Configurations](#12-saving-and-loading-configurations)
+13. [Viewing the Python Console](#13-viewing-the-python-console)
+14. [Reviewing the Operation Audit Trail](#14-reviewing-the-operation-audit-trail)
 
 ---
 
@@ -65,6 +67,7 @@ Full clustering with all configuration options.
 8. **Analysis options** -- Check boxes as needed:
    - "Generate analysis plots" -- produces static PNGs (marker ranking, PAGA, dotplot)
    - "Spatial analysis" -- computes neighborhood enrichment and Moran's I
+   - "Spatial feature smoothing" -- smooths features using spatial neighbors before clustering (see note below)
    - "Batch correction" -- applies Harmony (only for multi-image scope)
 9. Click **Run Clustering**
 10. View results in the results dialog (heatmap, scatter plot, marker rankings, plots)
@@ -74,6 +77,17 @@ Full clustering with all configuration options.
 - Each detection gets a **PathClass** classification like "Cluster 0", "Cluster 1", etc.
 - If embedding was computed, measurements **UMAP1/UMAP2** (or PCA1/PCA2, tSNE1/tSNE2) are added to each detection
 - The QuPath viewer updates to show cluster colors on cells
+
+### Spatial Feature Smoothing
+
+When "Spatial feature smoothing" is checked, a graph convolution pre-step is applied before clustering:
+
+1. A k-nearest neighbor graph is built from cell centroid coordinates
+2. The adjacency matrix is row-normalized
+3. Each cell's selected measurements are replaced by a weighted average of its spatial neighbors' values
+4. The smoothed measurements are then passed to the chosen clustering algorithm
+
+This makes **any** algorithm spatially-aware (not just BANKSY). Adjust the smoothing **k** parameter to control the spatial neighborhood size (default 15). Higher k = stronger smoothing across a larger neighborhood.
 
 ---
 
@@ -186,7 +200,77 @@ Automatically compute marker gate thresholds instead of setting them manually.
 
 ---
 
-## 8. Managing Clusters (Rename/Merge)
+## 8. Extracting Foundation Model Features
+
+Extract morphological embeddings from pre-trained vision foundation models and store them as per-detection measurements.
+
+### Step-by-step:
+
+1. Open an image with cell detections
+2. **Extensions > QP-CAT > Extract Foundation Model Features...**
+3. **Select a model** from the dropdown:
+   - **H-optimus-0** (Bioptimus, 1536-dim) -- gated, requires HuggingFace token
+   - **Virchow** (Paige AI, 2560-dim) -- gated, requires HuggingFace token
+   - **Hibou-B** (HistAI, 768-dim) / **Hibou-L** (1024-dim) -- gated, requires HuggingFace token
+   - **Midnight** (kaiko.ai, 768-dim) -- open access
+   - **DINOv2-Large** (Meta AI, 1024-dim) -- open access
+4. **For gated models:** Enter your HuggingFace auth token (obtain one at https://huggingface.co/settings/tokens after accepting the model's license on its HuggingFace page)
+5. Click **Extract Features**
+6. The model is downloaded on first use and cached locally for future runs
+7. Wait for extraction to complete (progress shown in status bar)
+
+### What happens to your data:
+
+- Each detection receives measurements named `FM_0`, `FM_1`, ..., `FM_N` (where N depends on the model's embedding dimension)
+- These measurements can be selected in the clustering dialog just like channel intensity measurements
+- Foundation model features capture morphological and textural information from the image tile around each cell
+
+### Using foundation model features for clustering:
+
+1. After extraction, open **Run Clustering...**
+2. In the measurement selection panel, select the `FM_*` measurements (you can use them alone or combined with channel intensity measurements)
+3. Proceed with clustering as usual
+
+**Note:** All included models use commercially permissive licenses (Apache 2.0). Models are not bundled with the extension -- they are downloaded on-demand from HuggingFace.
+
+---
+
+## 9. Zero-Shot Phenotyping
+
+Assign cell phenotypes using natural language text prompts and the BiomedCLIP vision-language model -- no marker gating rules or training data required.
+
+### Step-by-step:
+
+1. Open an image with cell detections
+2. **Extensions > QP-CAT > Zero-Shot Phenotyping (BiomedCLIP)...**
+3. Enter phenotype text prompts in the text area, **one per line**. Examples:
+   - `lymphocyte`
+   - `tumor cell`
+   - `stromal cell`
+   - `macrophage`
+   - `necrotic tissue`
+4. Click **Run**
+5. BiomedCLIP is downloaded on first use and cached locally (MIT License, Microsoft)
+6. Wait for the model to process each cell's image tile against all prompts
+
+### What happens to your data:
+
+- Each detection receives a PathClass classification matching the highest-scoring text prompt
+- A confidence score is stored as a measurement for each detection
+- The QuPath viewer updates to show phenotype colors on cells
+
+### Tips for effective prompts:
+
+- Use concise, descriptive terms that a pathologist would use
+- Be specific: "CD8-positive T lymphocyte" may work better than just "T cell"
+- Add an "other" or "background" prompt as a catch-all for cells that do not match any specific type
+- Experiment with different phrasings -- slight changes in wording can affect results
+
+**Note:** BiomedCLIP does not require a HuggingFace auth token. It is downloaded on-demand and cached locally.
+
+---
+
+## 10. Managing Clusters (Rename/Merge)
 
 Organize cluster assignments after clustering.
 
@@ -203,7 +287,7 @@ Changes are applied immediately to detection objects.
 
 ---
 
-## 9. Exporting AnnData
+## 11. Exporting AnnData
 
 Export data for use with external single-cell tools (Scanpy, Seurat, cellxgene).
 
@@ -225,7 +309,7 @@ print(adata)
 
 ---
 
-## 10. Saving and Loading Configurations
+## 12. Saving and Loading Configurations
 
 ### Clustering Configs
 
@@ -247,7 +331,7 @@ Rule sets are stored in `<project>/qpcat/phenotype_rules/`.
 
 ---
 
-## 11. Viewing the Python Console
+## 13. Viewing the Python Console
 
 Monitor Python-side output in real time.
 
@@ -261,7 +345,7 @@ Useful for diagnosing errors, monitoring long operations, and seeing detailed Py
 
 ---
 
-## 12. Reviewing the Operation Audit Trail
+## 14. Reviewing the Operation Audit Trail
 
 Every QP-CAT operation is logged to a persistent file in your project.
 

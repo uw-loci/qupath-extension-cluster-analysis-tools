@@ -10,12 +10,15 @@ Recommendations for getting the best results from cell clustering and phenotypin
 2. [Measurement Selection](#measurement-selection)
 3. [Normalization](#normalization)
 4. [Choosing a Clustering Algorithm](#choosing-a-clustering-algorithm)
-5. [Cluster Evaluation](#cluster-evaluation)
-6. [Phenotyping Strategy](#phenotyping-strategy)
-7. [Spatial Analysis](#spatial-analysis)
-8. [Multi-Image Projects](#multi-image-projects)
-9. [Reproducibility](#reproducibility)
-10. [Common Pitfalls](#common-pitfalls)
+5. [Spatial Feature Smoothing](#spatial-feature-smoothing)
+6. [Cluster Evaluation](#cluster-evaluation)
+7. [Foundation Model Features vs Channel Measurements](#foundation-model-features-vs-channel-measurements)
+8. [Phenotyping Strategy](#phenotyping-strategy)
+9. [Zero-Shot vs Rule-Based Phenotyping](#zero-shot-vs-rule-based-phenotyping)
+10. [Spatial Analysis](#spatial-analysis)
+11. [Multi-Image Projects](#multi-image-projects)
+12. [Reproducibility](#reproducibility)
+13. [Common Pitfalls](#common-pitfalls)
 
 ---
 
@@ -137,6 +140,42 @@ Do you know how many clusters to expect?
 
 ---
 
+## Spatial Feature Smoothing
+
+### When to Use Spatial Smoothing
+
+Enable spatial feature smoothing when you expect **nearby cells to have similar phenotypes or states** -- for example:
+
+- **Tissue domains** where cells in the same region should cluster together
+- **Tumor microenvironment** analysis where spatial context matters
+- **Reducing noisy singleton assignments** where isolated cells get spurious cluster labels
+
+Spatial smoothing works as a pre-processing step with **any** clustering algorithm. It builds a k-nearest neighbor graph from cell centroids and replaces each cell's features with a weighted average of its spatial neighbors' features (graph convolution with row-normalized adjacency).
+
+### When NOT to Use Spatial Smoothing
+
+- When biological neighbors are expected to be **different** (e.g., immune cells infiltrating a tumor -- you want to distinguish infiltrating cells from surrounding tumor cells)
+- When spatial location is irrelevant to your question (e.g., comparing marker expression across conditions regardless of tissue architecture)
+- When you are already using **BANKSY**, which has its own built-in spatial weighting mechanism
+
+### Spatial Smoothing vs BANKSY
+
+| | Spatial Smoothing | BANKSY |
+|---|---|---|
+| **Approach** | Pre-processing step (smooth, then cluster) | Integrated (spatial info in the clustering model) |
+| **Works with** | Any algorithm (Leiden, KMeans, HDBSCAN, etc.) | Leiden only (built-in) |
+| **Control** | Single parameter (k neighbors) | Multiple parameters (lambda, k_geom, resolution) |
+| **Best for** | Quick spatial awareness on top of your preferred algorithm | Full spatial integration when tissue domains are the primary goal |
+
+### Parameter Guidance
+
+- **k = 10-20**: moderate smoothing, good starting point
+- **k < 10**: minimal smoothing, preserves more cell-level variation
+- **k > 30**: strong smoothing, best for broad tissue domain identification
+- Very high k values risk over-smoothing and losing fine-grained cell type distinctions
+
+---
+
 ## Cluster Evaluation
 
 After clustering, assess quality using the results dialog:
@@ -170,6 +209,44 @@ Clustering is rarely perfect on the first try. A typical workflow:
 
 ---
 
+## Foundation Model Features vs Channel Measurements
+
+### When to Use Foundation Model Features
+
+Foundation model embeddings capture morphological and textural information from the image tile surrounding each cell. They are useful when:
+
+- Your image has **few marker channels** (e.g., H&E, single-stain IHC) and you want to cluster by cell morphology rather than marker intensity
+- You want to discover **morphological subtypes** that are not evident from marker expression alone
+- You want to combine morphological features with marker expression for **richer clustering input**
+- You are working with **histopathology images** where tissue architecture matters more than individual marker values
+
+### When to Use Channel Measurements
+
+Traditional mean intensity measurements remain the best choice when:
+
+- You have a **well-characterized multiplexed panel** with known biological markers
+- Your analysis goal is specifically about **marker co-expression patterns** (e.g., which cells are CD3+CD8+ vs CD3+CD4+)
+- You need results that are **directly interpretable** in terms of protein expression
+- You want to define phenotypes using **gating rules** (rule-based phenotyping requires intensity measurements)
+
+### Combining Both
+
+Foundation model features (`FM_*` measurements) and channel measurements can be selected together in the clustering dialog. This can be powerful but keep in mind:
+
+- Foundation model features are high-dimensional (768-2560 dimensions depending on the model) and will dominate over a smaller number of channel measurements
+- Consider clustering on foundation model features **separately** first to understand what morphological groups exist, then correlate with marker expression
+- PCA or UMAP on foundation model features alone can reveal tissue architecture patterns
+
+### Model Selection Guidance
+
+- **H-optimus-0**: Large pathology-specialized model (1536-dim). Good general-purpose choice for histopathology.
+- **Virchow**: Pathology-specialized (2560-dim). Highest dimensionality; may capture more nuance but is more computationally intensive.
+- **Hibou-B / Hibou-L**: Pathology-specialized, smaller (768/1024-dim). Good balance of quality and speed.
+- **Midnight**: Pathology-specialized (768-dim). Open access, no token required.
+- **DINOv2-Large**: General-purpose vision model (1024-dim). Not pathology-specific but very robust. Good baseline for comparison. No token required.
+
+---
+
 ## Phenotyping Strategy
 
 ### Unsupervised First, Then Supervised
@@ -194,6 +271,44 @@ A recommended approach:
 - **GMM** works best for clearly bimodal distributions
 - **Gamma** works best for strictly positive, right-skewed markers
 - Always visually verify gate positions using the histogram
+
+---
+
+## Zero-Shot vs Rule-Based Phenotyping
+
+QP-CAT offers two complementary approaches to cell phenotyping:
+
+### When to Use Zero-Shot Phenotyping (BiomedCLIP)
+
+- **Exploratory analysis** -- quickly get a sense of cell types present without defining rules
+- **H&E or brightfield images** -- where you have no marker channels for gating, only morphology
+- **Limited panel** -- when your marker panel does not cover all cell types you want to identify
+- **Rapid prototyping** -- test phenotype hypotheses before investing time in rule design
+- **Non-expert users** -- natural language prompts are more accessible than marker gating
+
+### When to Use Rule-Based Phenotyping
+
+- **Well-characterized multiplexed panels** -- when you know exactly which markers define each cell type
+- **Reproducibility** -- rules are deterministic and produce identical results on the same data
+- **Publication-ready analysis** -- reviewers expect defined gating strategies with explicit thresholds
+- **Fine-grained control** -- rule order, per-marker thresholds, and positive/negative logic give precise control
+- **Large panels (>10 markers)** -- rule-based gating scales well with many markers
+
+### Combining Both Approaches
+
+A recommended workflow:
+
+1. Run **zero-shot phenotyping** first for a quick overview of cell populations
+2. Use the zero-shot results to inform which **markers and thresholds** to use for rule-based gating
+3. Define and refine **phenotype rules** for your final, reproducible analysis
+4. Compare zero-shot and rule-based assignments to identify discrepancies worth investigating
+
+### Zero-Shot Limitations
+
+- Results depend on text prompt phrasing -- small changes can shift assignments
+- The model was trained on biomedical literature and may not perfectly match every tissue type
+- Confidence scores should be checked -- low-confidence assignments may be unreliable
+- Not deterministic across model versions if BiomedCLIP is updated upstream
 
 ---
 
