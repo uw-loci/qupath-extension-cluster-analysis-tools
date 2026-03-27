@@ -30,7 +30,7 @@ logger = logging.getLogger("qpcat.features")
 import numpy as np
 import torch
 from appose import NDArray as PyNDArray
-from model_utils import FOUNDATION_MODELS, detect_device
+# FOUNDATION_MODELS and detect_device() available from model_utils loaded during init
 
 # 1. Parse inputs
 tiles = tile_images.ndarray().copy()  # (N, H, W, C) uint8

@@ -407,7 +407,7 @@ if has_labels and do_class_weights and n_classes > 1:
     logger.info("Class weights: %s", {name: "%.2f" % w for name, w in zip(class_names, weights)})
 
 # 4. Train/validation split (stratified by label where possible)
-from model_utils import detect_device
+# detect_device() is available from model_utils loaded during init
 device = detect_device()
 
 if use_tiles:

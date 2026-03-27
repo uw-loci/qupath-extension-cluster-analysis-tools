@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from appose import NDArray as PyNDArray
-from model_utils import detect_device
+# detect_device() available from model_utils loaded during init
 
 # Import the model class (same architecture as training)
 # Inline to avoid import issues in Appose scripts

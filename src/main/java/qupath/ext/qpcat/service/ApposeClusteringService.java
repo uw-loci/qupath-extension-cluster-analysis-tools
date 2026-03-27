@@ -168,7 +168,11 @@ public class ApposeClusteringService {
                 });
 
                 // Import numpy first to avoid Windows threading deadlock
-                String initScript = "import numpy\n" + loadScript("init_services.py");
+                // Load model_utils into global scope so task scripts can use
+                // detect_device() and FOUNDATION_MODELS without import
+                String initScript = "import numpy\n"
+                        + loadScript("init_services.py") + "\n"
+                        + loadScript("model_utils.py");
                 pythonService.init(initScript);
 
                 // Verify packages are importable

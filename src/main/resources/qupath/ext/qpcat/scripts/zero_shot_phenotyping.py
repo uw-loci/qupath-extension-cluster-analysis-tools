@@ -34,7 +34,7 @@ logger = logging.getLogger("qpcat.zeroshot")
 import numpy as np
 import torch
 from appose import NDArray as PyNDArray
-from model_utils import detect_device
+# detect_device() available from model_utils loaded during init
 
 # 1. Parse inputs
 tiles = tile_images.ndarray().copy()  # (N, H, W, C) uint8
