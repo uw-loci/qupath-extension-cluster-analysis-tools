@@ -1582,6 +1582,8 @@ public class ClusteringWorkflow {
             int latentDim, int epochs, double learningRate,
             int batchSize, double supervisionWeight,
             String inputMode, int tileSize, boolean includeCellMask,
+            double validationSplit, int earlyStoppingPatience,
+            boolean enableClassWeights, boolean enableAugmentation,
             Consumer<String> progressCallback) throws IOException {
 
         long startTime = System.currentTimeMillis();
@@ -1646,6 +1648,10 @@ public class ClusteringWorkflow {
                 inputs.put("batch_size", batchSize);
                 inputs.put("supervision_weight", supervisionWeight);
                 inputs.put("normalization", normalization);
+                inputs.put("validation_split", validationSplit);
+                inputs.put("early_stopping_patience", earlyStoppingPatience);
+                inputs.put("enable_class_weights", enableClassWeights);
+                inputs.put("enable_augmentation", enableAugmentation);
 
                 if (!useTiles) {
                     // Measurement mode

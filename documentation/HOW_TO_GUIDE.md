@@ -301,10 +301,14 @@ Train a VAE-based classifier on labeled cells, then apply across the project. Th
 4. **Cell mask channel** (tile mode only, default ON): Appends a binary mask of the cell's outline as an extra channel. This tells the network which cell is the target while preserving neighbor context. Based on CellSighter (Amitay et al. 2023, Nature Communications).
 5. **Adjust training parameters** if desired (defaults work well for most cases):
    - Latent dimensions: 16 (how compressed the representation is; 8-32 typical)
-   - Epochs: 100 (training iterations; increase for tile mode)
+   - Epochs: 100 (maximum training iterations; early stopping may stop sooner)
    - Supervision weight: 1.0 (how strongly labels influence the model; 0 = unsupervised)
-   - Learning rate: 0.001 (reduce if training is unstable)
+   - Learning rate: 0.001 (OneCycleLR scheduler adjusts this automatically)
    - Batch size: 128 (reduce for tile mode if out of memory)
+   - Validation split: 0.2 (20% holdout for early stopping and best model selection)
+   - Early stop patience: 15 (epochs without val improvement before stopping; 0 = disabled)
+   - Class weighting: ON (handles imbalanced cell populations via inverse-frequency weights)
+   - Data augmentation: ON (Gaussian noise + per-channel scaling for measurement mode)
 6. Click **Train on Current Image**
 7. Review accuracy on labeled cells in the status bar
 

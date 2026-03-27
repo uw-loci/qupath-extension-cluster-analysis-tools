@@ -283,14 +283,27 @@ Tile mode is substantially slower than measurement mode because the convolutiona
 
 Inference (applying a trained model) is much faster than training -- typically seconds per image regardless of mode.
 
+### Training Features
+
+Adapted from the DL pixel classifier extension for robust training:
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| **Class weighting** | Inverse-frequency weights for imbalanced cell populations | ON |
+| **Validation split** | Stratified holdout set for monitoring overfitting | 20% |
+| **Early stopping** | Stop when validation accuracy plateaus; restore best model | Patience=15 |
+| **OneCycleLR** | Cosine-annealing learning rate schedule (fast.ai style) | ON |
+| **Mixed precision** | FP16/BF16 on CUDA for ~2x speedup | Auto (CUDA only) |
+| **Gradient clipping** | Prevents exploding gradients (max_norm=1.0) | ON |
+| **AdamW optimizer** | Decoupled weight decay for regularization | weight_decay=0.01 |
+| **Data augmentation** | Gaussian noise + per-channel scaling (measurement mode) | ON |
+
 ### Current Limitations (Test Feature)
 
-- No early stopping or learning rate scheduling
-- No data augmentation for tile mode (rotation, flipping, etc.)
+- No data augmentation for tile mode yet (spatial transforms planned)
 - Model checkpoint held in memory only (not persisted to disk between sessions)
 - Fixed encoder architecture (3-layer conv or 2-layer MLP); no architecture tuning
 - Training loss displayed in log only, no live chart
-- No holdout validation set or cross-validation metrics
 - Tile mode with many channels (40+) and large tiles (64x64) can exhaust GPU memory
 - Results should be validated before use in published analyses
 

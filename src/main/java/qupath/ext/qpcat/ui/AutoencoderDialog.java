@@ -61,6 +61,10 @@ public class AutoencoderDialog {
     private Spinner<Double> learningRateSpinner;
     private Spinner<Integer> batchSizeSpinner;
     private Spinner<Double> supervisionWeightSpinner;
+    private Spinner<Double> valSplitSpinner;
+    private Spinner<Integer> earlyStopSpinner;
+    private CheckBox classWeightsCheck;
+    private CheckBox augmentationCheck;
     private Label labelSummaryLabel;
     private Label statusLabel;
     private ProgressBar progressBar;
@@ -307,6 +311,43 @@ public class AutoencoderDialog {
                 + "Default: 1.0. Higher values = stronger label enforcement.\n"
                 + "Set to 0 for purely unsupervised VAE (reconstruction only)."));
 
+        valSplitSpinner = new Spinner<>(0.0, 0.5, 0.2, 0.05);
+        valSplitSpinner.setEditable(true);
+        valSplitSpinner.setPrefWidth(80);
+        valSplitSpinner.setTooltip(new Tooltip(
+                "Fraction of cells held out for validation.\n"
+                + "Default: 0.2 (20%). Set to 0 to disable.\n"
+                + "Validation accuracy is used for early stopping\n"
+                + "and best-model selection."));
+
+        earlyStopSpinner = new Spinner<>(0, 100, 15);
+        earlyStopSpinner.setEditable(true);
+        earlyStopSpinner.setPrefWidth(80);
+        earlyStopSpinner.setTooltip(new Tooltip(
+                "Early stopping patience (epochs without improvement).\n"
+                + "Default: 15. Set to 0 to disable.\n"
+                + "When validation accuracy stops improving for this\n"
+                + "many epochs, training stops and the best model\n"
+                + "is restored. Prevents overfitting."));
+
+        classWeightsCheck = new CheckBox("Class weighting (handle imbalanced populations)");
+        classWeightsCheck.setSelected(true);
+        classWeightsCheck.setTooltip(new Tooltip(
+                "Compute inverse-frequency class weights for the\n"
+                + "classification loss. Gives rare cell types more\n"
+                + "influence during training.\n"
+                + "Recommended when cell populations are unequal\n"
+                + "(e.g., 5000 tumor cells vs 200 immune cells)."));
+
+        augmentationCheck = new CheckBox("Data augmentation (noise + scaling)");
+        augmentationCheck.setSelected(true);
+        augmentationCheck.setTooltip(new Tooltip(
+                "Apply random perturbations during training:\n"
+                + "  Measurement mode: Gaussian noise + per-channel scaling\n"
+                + "  Tile mode: not yet implemented\n"
+                + "Improves generalization and reduces overfitting.\n"
+                + "Applied to training data only, never to validation."));
+
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(5);
@@ -314,9 +355,11 @@ public class AutoencoderDialog {
                        new Label("Epochs:"), epochsSpinner);
         grid.addRow(1, new Label("Learning rate:"), learningRateSpinner,
                        new Label("Batch size:"), batchSizeSpinner);
-        grid.addRow(2, new Label("Supervision weight:"), supervisionWeightSpinner);
+        grid.addRow(2, new Label("Supervision weight:"), supervisionWeightSpinner,
+                       new Label("Val. split:"), valSplitSpinner);
+        grid.addRow(3, new Label("Early stop patience:"), earlyStopSpinner);
 
-        return new VBox(5, heading, grid);
+        return new VBox(5, heading, grid, classWeightsCheck, augmentationCheck);
     }
 
     private VBox createStatusSection() {
@@ -436,6 +479,10 @@ public class AutoencoderDialog {
         String inputMode = useTiles ? "tiles" : "measurements";
         int tileSize = tileSizeSpinner.getValue();
         boolean includeMask = useTiles && includeMaskCheck.isSelected();
+        double valSplit = valSplitSpinner.getValue();
+        int earlyStopPatience = earlyStopSpinner.getValue();
+        boolean useClassWeights = classWeightsCheck.isSelected();
+        boolean useAugmentation = augmentationCheck.isSelected();
 
         Thread thread = new Thread(() -> {
             try {
@@ -444,6 +491,7 @@ public class AutoencoderDialog {
                         selectedMeasurements, normId,
                         latentDim, epochs, lr, batchSize, supWeight,
                         inputMode, tileSize, includeMask,
+                        valSplit, earlyStopPatience, useClassWeights, useAugmentation,
                         progress);
 
                 trainedModelState = (String) result.get("model_state");
