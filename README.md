@@ -289,18 +289,27 @@ Inference (applying a trained model) is much faster than training -- typically s
 
 ### Training Features
 
-Adapted from the DL pixel classifier extension for robust training:
+VAE best practices and training infrastructure:
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| **Class weighting** | Inverse-frequency weights for imbalanced cell populations | ON |
+| **Gaussian NLL** | Learned per-feature variance for heteroscedastic noise (measurement mode) | ON |
+| **Cyclical KL annealing** | 4-cycle ramp prevents posterior collapse (Fu et al. 2019) | beta_max=0.5 |
+| **Free bits** | Min KL per latent dim prevents dimension collapse (Kingma et al. 2016) | 0.25 nats |
+| **LayerNorm** | Per-sample normalization (preferred over BatchNorm for VAEs) | ON |
+| **Logvar clamping** | Numerical stability for variance outputs | [-10, 10] |
+| **Unsupervised pre-training** | Train reconstruction before classification | 10% of epochs |
+| **Label-fraction scaling** | Classification weight scaled by N_total/N_labeled | Auto |
+| **Active units monitoring** | Warns on posterior collapse (low active latent dims) | Auto |
+| **R-squared diagnostics** | Per-feature reconstruction quality check | Auto |
+| **Class weighting** | Inverse-frequency weights for imbalanced populations | ON |
 | **Validation split** | Stratified holdout set for monitoring overfitting | 20% |
-| **Early stopping** | Stop when validation accuracy plateaus; restore best model | Patience=15 |
-| **OneCycleLR** | Cosine-annealing learning rate schedule (fast.ai style) | ON |
-| **Mixed precision** | FP16/BF16 on CUDA for ~2x speedup | Auto (CUDA only) |
-| **Gradient clipping** | Prevents exploding gradients (max_norm=1.0) | ON |
-| **AdamW optimizer** | Decoupled weight decay for regularization | weight_decay=0.01 |
-| **Data augmentation** | Gaussian noise + per-channel scaling (measurement mode) | ON |
+| **Early stopping** | Stop when val accuracy plateaus; restore best model | Patience=15 |
+| **ReduceLROnPlateau** | Halve LR when loss plateaus (standard VAE scheduler) | factor=0.5 |
+| **Mixed precision** | FP16 on CUDA for ~2x speedup | Auto (CUDA only) |
+| **Gradient clipping** | Prevents exploding gradients | max_norm=1.0 |
+| **Adam optimizer** | No weight decay (conflicts with KL regularization) | lr=0.001 |
+| **Data augmentation** | Noise + scaling + feature dropout (measurement mode) | ON |
 
 ### Current Limitations (Test Feature)
 

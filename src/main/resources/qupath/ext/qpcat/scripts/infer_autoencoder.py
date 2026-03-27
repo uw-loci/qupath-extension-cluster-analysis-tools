@@ -6,8 +6,9 @@ new cell measurements through the encoder + classifier.
 Used for applying a trained model across project images.
 
 Inputs (injected by Appose 0.10.0):
-  measurements: NDArray (N_cells x N_markers, float64)
-  marker_names: list[str]
+  measurements: NDArray (N_cells x N_markers, float64)  [measurement mode]
+  tile_images: NDArray (N_cells x C x H x W, float32)   [tile mode]
+  marker_names: list[str]  [measurement mode]
   model_state_base64: str -- base64-encoded model checkpoint
 
 Outputs (via task.outputs):
@@ -32,8 +33,10 @@ import torch.nn.functional as F
 from appose import NDArray as PyNDArray
 # detect_device() available from model_utils loaded during init
 
-# Import the model class (same architecture as training)
-# Inline to avoid import issues in Appose scripts
+LOGVAR_CLAMP_MIN = -10.0
+LOGVAR_CLAMP_MAX = 10.0
+
+# Architecture must match training exactly
 class CellVAE(nn.Module):
     def __init__(self, n_markers, latent_dim, n_classes=0):
         super().__init__()
@@ -41,21 +44,28 @@ class CellVAE(nn.Module):
         self.latent_dim = latent_dim
         self.n_classes = n_classes
         self.enc1 = nn.Linear(n_markers, 128)
+        self.enc_ln1 = nn.LayerNorm(128)
         self.enc2 = nn.Linear(128, 64)
+        self.enc_ln2 = nn.LayerNorm(64)
         self.fc_mu = nn.Linear(64, latent_dim)
         self.fc_logvar = nn.Linear(64, latent_dim)
         self.dec1 = nn.Linear(latent_dim, 64)
+        self.dec_ln1 = nn.LayerNorm(64)
         self.dec2 = nn.Linear(64, 128)
-        self.dec_out = nn.Linear(128, n_markers)
+        self.dec_ln2 = nn.LayerNorm(128)
+        self.dec_mu = nn.Linear(128, n_markers)
+        self.dec_logvar = nn.Linear(128, n_markers)
         if n_classes > 0:
             self.classifier = nn.Linear(latent_dim, n_classes)
         else:
             self.classifier = None
 
     def encode(self, x):
-        h = F.relu(self.enc1(x))
-        h = F.relu(self.enc2(h))
-        return self.fc_mu(h), self.fc_logvar(h)
+        h = F.leaky_relu(self.enc_ln1(self.enc1(x)))
+        h = F.leaky_relu(self.enc_ln2(self.enc2(h)))
+        mu = self.fc_mu(h)
+        logvar = torch.clamp(self.fc_logvar(h), LOGVAR_CLAMP_MIN, LOGVAR_CLAMP_MAX)
+        return mu, logvar
 
     def classify(self, z):
         if self.classifier is None:
@@ -64,7 +74,6 @@ class CellVAE(nn.Module):
 
 
 class ConvCellVAE(nn.Module):
-    """Convolutional VAE (must match training architecture exactly)."""
     def __init__(self, n_channels, tile_size, latent_dim, n_classes=0):
         super().__init__()
         self.n_channels = n_channels
@@ -72,9 +81,9 @@ class ConvCellVAE(nn.Module):
         self.latent_dim = latent_dim
         self.n_classes = n_classes
         self.encoder = nn.Sequential(
-            nn.Conv2d(n_channels, 32, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.ReLU(),
+            nn.Conv2d(n_channels, 32, 3, stride=2, padding=1), nn.LeakyReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.LeakyReLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.LeakyReLU(),
             nn.AdaptiveAvgPool2d(1), nn.Flatten(),
         )
         self.fc_mu = nn.Linear(128, latent_dim)
@@ -82,8 +91,8 @@ class ConvCellVAE(nn.Module):
         self.dec_spatial = max(tile_size // 8, 1)
         self.dec_fc = nn.Linear(latent_dim, 128 * self.dec_spatial * self.dec_spatial)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1), nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1), nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1), nn.LeakyReLU(),
+            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1), nn.LeakyReLU(),
             nn.ConvTranspose2d(32, n_channels, 3, stride=2, padding=1, output_padding=1),
         )
         if n_classes > 0:
@@ -93,7 +102,9 @@ class ConvCellVAE(nn.Module):
 
     def encode(self, x):
         h = self.encoder(x)
-        return self.fc_mu(h), self.fc_logvar(h)
+        mu = self.fc_mu(h)
+        logvar = torch.clamp(self.fc_logvar(h), LOGVAR_CLAMP_MIN, LOGVAR_CLAMP_MAX)
+        return mu, logvar
 
     def classify(self, z):
         if self.classifier is None:
@@ -126,7 +137,6 @@ if use_tiles:
     ckpt_tile_size = checkpoint['tile_size']
     logger.info("Tile inference: %d cells, %d channels", n_cells, ckpt_channels)
 
-    # Per-channel normalization (reshape stats to NCHW broadcast shape)
     if norm_method == "zscore" and norm_params.get('mean') is not None:
         mean = np.array(norm_params['mean'], dtype=np.float32).reshape(1, -1, 1, 1)
         std = np.array(norm_params['std'], dtype=np.float32).reshape(1, -1, 1, 1)

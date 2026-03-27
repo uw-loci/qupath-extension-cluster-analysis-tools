@@ -7,16 +7,28 @@ the model learns a latent space that both reconstructs measurements
 AND separates labeled cell types (semi-supervised).
 
 Architecture follows the scANVI pattern (Xu et al. 2021, Molecular Systems Biology)
-adapted for continuous protein measurements (Gaussian likelihood instead of ZINB).
+adapted for continuous protein measurements (Gaussian NLL instead of ZINB).
 
-Training features adapted from the DL pixel classifier extension:
+VAE best practices implemented:
+- Gaussian NLL reconstruction with learned per-feature variance
+- Cyclical KL annealing (Fu et al. 2019) with configurable beta_max
+- Free bits regularization (Kingma et al. 2016) to prevent dim collapse
+- LayerNorm in encoder/decoder (preferred over BatchNorm for VAEs)
+- Logvar clamping [-10, 10] for numerical stability
+- Label-fraction-scaled classification weight
+- Unsupervised pre-training phase before classification loss
+- Feature dropout augmentation
+- Active units monitoring (latent dims with meaningful variance)
+- Per-feature R-squared reconstruction quality metric
+- Adam optimizer (no weight decay -- conflicts with KL regularization)
+- ReduceLROnPlateau scheduler (standard for VAEs)
+
+Training infrastructure (adapted from DL pixel classifier):
 - Class weighting (inverse-frequency) for imbalanced cell populations
 - Validation split (20%) with stratified sampling
 - Early stopping with best-model restoration
-- OneCycleLR learning rate scheduling
 - Mixed precision training (AMP) on CUDA
 - Gradient clipping (max_norm=1.0)
-- AdamW optimizer with weight decay
 
 Inputs (injected by Appose 0.10.0):
   measurements: NDArray (N_cells x N_markers, float64)  [measurement mode]
@@ -36,11 +48,6 @@ Inputs (injected by Appose 0.10.0):
   enable_class_weights: bool (default True)
   enable_augmentation: bool (default True)
 
-Optional inputs:
-  model_save_path: str -- path to save trained model checkpoint
-  n_channels: int -- number of image channels (tile mode)
-  tile_size: int -- tile size in pixels (tile mode)
-
 Outputs (via task.outputs):
   latent_features: NDArray (N_cells x latent_dim, float32)
   predicted_labels: NDArray (N_cells,) int32
@@ -50,6 +57,7 @@ Outputs (via task.outputs):
   final_class_accuracy: float
   best_val_accuracy: float
   best_epoch: int
+  active_units: int
   model_state_base64: str -- base64-encoded state dict
 """
 import sys
@@ -57,6 +65,7 @@ import json
 import logging
 import base64
 import io
+import math
 
 logger = logging.getLogger("qpcat.autoencoder")
 
@@ -70,13 +79,37 @@ from appose import NDArray as PyNDArray
 
 # ==================== VAE Architecture ====================
 
+# VAE best practices:
+# - LayerNorm instead of BatchNorm (BatchNorm interacts poorly with
+#   stochastic sampling; LayerNorm is per-sample and deterministic)
+# - Logvar clamped to [-10, 10] for numerical stability
+# - Gaussian NLL with learned variance for reconstruction
+# - Classifier operates on sampled z (not mean) for robustness
+
+LOGVAR_CLAMP_MIN = -10.0
+LOGVAR_CLAMP_MAX = 10.0
+
+# Free bits: minimum KL per latent dimension (Kingma et al. 2016)
+# Prevents individual dims from collapsing while allowing overall regularization
+FREE_BITS = 0.25  # nats per dimension
+
+# Cyclical KL annealing (Fu et al. 2019)
+N_KL_CYCLES = 4
+KL_BETA_MAX = 0.5  # final KL weight per cycle
+KL_RAMP_FRACTION = 0.8  # ramp 0->beta_max over this fraction of each cycle
+
+# Pre-training: train unsupervised for this fraction of epochs
+# before introducing classification loss
+PRETRAIN_FRACTION = 0.1
+
+
 class CellVAE(nn.Module):
     """
-    Variational Autoencoder with optional semi-supervised classifier head.
+    Variational Autoencoder with LayerNorm and optional semi-supervised head.
 
-    Encoder: input -> 128 -> 64 -> (mu, logvar) of size latent_dim
-    Decoder: latent_dim -> 64 -> 128 -> input (Gaussian reconstruction)
-    Classifier: latent_dim -> n_classes (optional, for labeled cells)
+    Encoder: input -> LN -> 128 -> LReLU -> LN -> 64 -> LReLU -> (mu, logvar)
+    Decoder: latent -> 64 -> LReLU -> LN -> 128 -> LReLU -> LN -> (recon_mu, recon_logvar)
+    Classifier: latent -> n_classes (optional)
     """
 
     def __init__(self, n_markers, latent_dim, n_classes=0):
@@ -85,16 +118,21 @@ class CellVAE(nn.Module):
         self.latent_dim = latent_dim
         self.n_classes = n_classes
 
-        # Encoder
+        # Encoder with LayerNorm
         self.enc1 = nn.Linear(n_markers, 128)
+        self.enc_ln1 = nn.LayerNorm(128)
         self.enc2 = nn.Linear(128, 64)
+        self.enc_ln2 = nn.LayerNorm(64)
         self.fc_mu = nn.Linear(64, latent_dim)
         self.fc_logvar = nn.Linear(64, latent_dim)
 
-        # Decoder
+        # Decoder with LayerNorm -- outputs both mean and logvar for Gaussian NLL
         self.dec1 = nn.Linear(latent_dim, 64)
+        self.dec_ln1 = nn.LayerNorm(64)
         self.dec2 = nn.Linear(64, 128)
-        self.dec_out = nn.Linear(128, n_markers)
+        self.dec_ln2 = nn.LayerNorm(128)
+        self.dec_mu = nn.Linear(128, n_markers)
+        self.dec_logvar = nn.Linear(128, n_markers)
 
         # Classifier head (only if supervised/semi-supervised)
         if n_classes > 0:
@@ -103,9 +141,11 @@ class CellVAE(nn.Module):
             self.classifier = None
 
     def encode(self, x):
-        h = F.relu(self.enc1(x))
-        h = F.relu(self.enc2(h))
-        return self.fc_mu(h), self.fc_logvar(h)
+        h = F.leaky_relu(self.enc_ln1(self.enc1(x)))
+        h = F.leaky_relu(self.enc_ln2(self.enc2(h)))
+        mu = self.fc_mu(h)
+        logvar = torch.clamp(self.fc_logvar(h), LOGVAR_CLAMP_MIN, LOGVAR_CLAMP_MAX)
+        return mu, logvar
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -113,9 +153,11 @@ class CellVAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        h = F.relu(self.dec1(z))
-        h = F.relu(self.dec2(h))
-        return self.dec_out(h)
+        h = F.leaky_relu(self.dec_ln1(self.dec1(z)))
+        h = F.leaky_relu(self.dec_ln2(self.dec2(h)))
+        recon_mu = self.dec_mu(h)
+        recon_logvar = torch.clamp(self.dec_logvar(h), LOGVAR_CLAMP_MIN, LOGVAR_CLAMP_MAX)
+        return recon_mu, recon_logvar
 
     def classify(self, z):
         if self.classifier is None:
@@ -125,22 +167,16 @@ class CellVAE(nn.Module):
     def forward(self, x):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
-        recon = self.decode(z)
+        recon_mu, recon_logvar = self.decode(z)
         class_logits = self.classify(z)
-        return recon, mu, logvar, z, class_logits
+        return recon_mu, recon_logvar, mu, logvar, z, class_logits
 
 
 class ConvCellVAE(nn.Module):
     """
     Convolutional VAE for tile-based cell classification.
-
-    Takes multi-channel image tiles (NCHW format) and learns a latent
-    representation via convolutional encoder/decoder. Supports variable
-    channel counts for multiplexed imaging (IMC, CODEX, IF panels).
-
-    Encoder: Conv2d layers -> AdaptiveAvgPool -> flatten -> (mu, logvar)
-    Decoder: Linear -> unflatten -> ConvTranspose2d layers -> output
-    Classifier: latent_dim -> n_classes (optional)
+    Uses LayerNorm where applicable (after flatten for FC layers).
+    Conv layers use no normalization (small model, AdaptiveAvgPool handles scale).
     """
 
     def __init__(self, n_channels, tile_size, latent_dim, n_classes=0):
@@ -150,34 +186,31 @@ class ConvCellVAE(nn.Module):
         self.latent_dim = latent_dim
         self.n_classes = n_classes
 
-        # Encoder: conv layers that reduce spatial dims
         self.encoder = nn.Sequential(
             nn.Conv2d(n_channels, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),  # -> (B, 128, 1, 1)
-            nn.Flatten(),             # -> (B, 128)
+            nn.LeakyReLU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
         )
 
         self.fc_mu = nn.Linear(128, latent_dim)
         self.fc_logvar = nn.Linear(128, latent_dim)
 
-        # Decoder: reconstruct spatial output
         self.dec_spatial = max(tile_size // 8, 1)
         self.dec_fc = nn.Linear(latent_dim, 128 * self.dec_spatial * self.dec_spatial)
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.ConvTranspose2d(32, n_channels, 3, stride=2, padding=1, output_padding=1),
         )
 
-        # Classifier head
         if n_classes > 0:
             self.classifier = nn.Linear(latent_dim, n_classes)
         else:
@@ -185,7 +218,9 @@ class ConvCellVAE(nn.Module):
 
     def encode(self, x):
         h = self.encoder(x)
-        return self.fc_mu(h), self.fc_logvar(h)
+        mu = self.fc_mu(h)
+        logvar = torch.clamp(self.fc_logvar(h), LOGVAR_CLAMP_MIN, LOGVAR_CLAMP_MAX)
+        return mu, logvar
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -193,7 +228,7 @@ class ConvCellVAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        h = F.relu(self.dec_fc(z))
+        h = F.leaky_relu(self.dec_fc(z))
         h = h.view(-1, 128, self.dec_spatial, self.dec_spatial)
         h = self.decoder(h)
         return h[:, :, :self.tile_size, :self.tile_size]
@@ -208,23 +243,54 @@ class ConvCellVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         recon = self.decode(z)
         class_logits = self.classify(z)
-        return recon, mu, logvar, z, class_logits
+        # ConvVAE uses MSE (no learned variance for spatial output)
+        return recon, None, mu, logvar, z, class_logits
 
 
-def vae_loss(recon, x, mu, logvar):
-    """Gaussian reconstruction loss + KL divergence."""
-    recon_loss = F.mse_loss(recon, x, reduction='mean')
-    kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    return recon_loss, kl_loss
+# ==================== Loss Functions ====================
+
+def gaussian_nll_loss(recon_mu, recon_logvar, x):
+    """
+    Gaussian negative log-likelihood with learned per-feature variance.
+    Better than MSE: lets the model learn heteroscedastic noise, which is
+    important for fluorescence data where brighter signals have higher variance.
+    """
+    # 0.5 * (log(2*pi) + logvar + (x - mu)^2 / exp(logvar))
+    return 0.5 * torch.mean(
+        recon_logvar + (x - recon_mu).pow(2) / (torch.exp(recon_logvar) + 1e-8)
+    )
+
+
+def kl_divergence_free_bits(mu, logvar, free_bits=FREE_BITS):
+    """
+    KL divergence with free bits (Kingma et al. 2016).
+    Each latent dimension gets a minimum KL of free_bits nats.
+    Prevents individual dimensions from collapsing to the prior.
+    """
+    kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    kl_per_dim = kl_per_dim.mean(dim=0)  # average over batch, keep dim
+    kl_clamped = torch.clamp(kl_per_dim, min=free_bits)
+    return kl_clamped.sum()
+
+
+def get_kl_beta(epoch, total_epochs, n_cycles=N_KL_CYCLES, beta_max=KL_BETA_MAX,
+                ramp_fraction=KL_RAMP_FRACTION):
+    """
+    Cyclical KL annealing (Fu et al. 2019).
+    Ramps KL weight 0->beta_max over ramp_fraction of each cycle, then holds.
+    Multiple cycles let the model re-explore before being regularized.
+    """
+    cycle_len = total_epochs / n_cycles
+    position = (epoch % cycle_len) / cycle_len
+    if position < ramp_fraction:
+        return beta_max * (position / ramp_fraction)
+    return beta_max
 
 
 # ==================== Early Stopping ====================
 
 class EarlyStopping:
-    """
-    Stops training when validation metric stops improving.
-    Adapted from the DL pixel classifier extension.
-    """
+    """Stops training when validation metric stops improving."""
 
     def __init__(self, patience=15, min_delta=0.001):
         self.patience = patience
@@ -255,11 +321,41 @@ class EarlyStopping:
 
 # ==================== Data Augmentation ====================
 
-def augment_measurements(data, noise_std=0.05, scale_range=0.1):
-    """Simple measurement-space augmentation: Gaussian noise + random scaling."""
-    noise = torch.randn_like(data) * noise_std
+def augment_measurements(data, noise_std=0.02, scale_range=0.1, dropout_p=0.1):
+    """
+    Measurement-space augmentation:
+    - Gaussian noise (2% of feature std)
+    - Per-feature random scaling (+/- 10%)
+    - Feature dropout (10% chance per feature zeroed out)
+    """
+    # Gaussian noise
+    augmented = data + torch.randn_like(data) * noise_std
+    # Per-feature scaling
     scale = 1.0 + (torch.rand(data.shape[1], device=data.device) - 0.5) * 2 * scale_range
-    return data * scale + noise
+    augmented = augmented * scale
+    # Feature dropout (zero out random features)
+    mask = torch.bernoulli(torch.full_like(data, 1.0 - dropout_p))
+    augmented = augmented * mask
+    return augmented
+
+
+# ==================== Diagnostics ====================
+
+def count_active_units(mu_all, threshold=0.01):
+    """
+    Count latent dimensions with meaningful variance (active units).
+    Should be close to latent_dim. Low count = posterior collapse.
+    """
+    var_per_dim = mu_all.var(dim=0)
+    return int((var_per_dim > threshold).sum().item())
+
+
+def compute_r_squared(original, reconstructed):
+    """Per-feature R-squared between input and reconstruction."""
+    ss_res = ((original - reconstructed) ** 2).sum(dim=0)
+    ss_tot = ((original - original.mean(dim=0)) ** 2).sum(dim=0)
+    r2 = 1.0 - ss_res / (ss_tot + 1e-8)
+    return r2.cpu().numpy()
 
 
 # ==================== Main Script ====================
@@ -395,18 +491,29 @@ else:
         data_norm = data.copy()
     data_norm_tiles = None
 
-# 3. Compute class weights (inverse-frequency, adapted from DL pixel classifier)
+# 3. Compute class weights (inverse-frequency)
 class_weight_tensor = None
 if has_labels and do_class_weights and n_classes > 1:
     class_counts = np.array([int((label_array == i).sum()) for i in range(n_classes)])
-    # Avoid division by zero for missing classes
     class_counts = np.maximum(class_counts, 1)
     weights = 1.0 / class_counts
-    weights = weights / weights.sum() * n_classes  # normalize so mean weight = 1
+    weights = weights / weights.sum() * n_classes
     class_weight_tensor = torch.tensor(weights, dtype=torch.float32)
     logger.info("Class weights: %s", {name: "%.2f" % w for name, w in zip(class_names, weights)})
 
-# 4. Train/validation split (stratified by label where possible)
+# Scale supervision weight by label fraction (scANVI practice)
+# This accounts for classification loss only applying to labeled cells
+effective_sup_weight = sup_weight
+if has_labels and n_labeled < n_cells:
+    effective_sup_weight = sup_weight * (n_cells / max(n_labeled, 1))
+    logger.info("Supervision weight scaled by label fraction: %.2f -> %.2f",
+                sup_weight, effective_sup_weight)
+
+# Pre-training phase: unsupervised epochs before classification loss
+pretrain_epochs = int(epochs * PRETRAIN_FRACTION) if has_labels else 0
+logger.info("Pre-training (unsupervised): %d epochs", pretrain_epochs)
+
+# 4. Train/validation split
 # detect_device() is available from model_utils loaded during init
 device = detect_device()
 
@@ -417,18 +524,15 @@ else:
 
 label_tensor = torch.tensor(label_array, dtype=torch.long)
 
-# Stratified split: maintain class proportions in train and val
 if val_split > 0 and n_cells > 20:
     from sklearn.model_selection import train_test_split
     indices = np.arange(n_cells)
-    # Use labeled cells for stratification, unlabeled as a single group
     strat_labels = label_array.copy()
-    strat_labels[strat_labels < 0] = n_classes  # group all unlabeled together
+    strat_labels[strat_labels < 0] = n_classes
     try:
         train_idx, val_idx = train_test_split(
             indices, test_size=val_split, random_state=42, stratify=strat_labels)
     except ValueError:
-        # Stratification fails if any class has <2 samples
         train_idx, val_idx = train_test_split(
             indices, test_size=val_split, random_state=42)
     train_dataset = Subset(TensorDataset(data_tensor, label_tensor), train_idx)
@@ -439,8 +543,6 @@ else:
     train_dataset = TensorDataset(data_tensor, label_tensor)
     val_dataset = None
     n_val = 0
-    train_idx = np.arange(n_cells)
-    val_idx = np.array([], dtype=int)
 
 train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True, drop_last=False)
 val_loader = DataLoader(val_dataset, batch_size=bs, shuffle=False) if val_dataset else None
@@ -452,14 +554,12 @@ if use_tiles:
 else:
     model = CellVAE(n_markers, ldim, n_classes if has_labels else 0).to(device)
 
-# AdamW with weight decay (adapted from DL pixel classifier)
-optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+# Adam without weight decay (KL already regularizes; weight decay conflicts)
+optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
 
-# OneCycleLR scheduler (adapted from DL pixel classifier)
-scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    optimizer, max_lr=lr, epochs=epochs,
-    steps_per_epoch=len(train_loader),
-    pct_start=0.3, anneal_strategy='cos')
+# ReduceLROnPlateau (standard for VAEs, monitors val loss or train loss)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6)
 
 # Mixed precision (CUDA only)
 use_amp = (device == "cuda")
@@ -471,9 +571,11 @@ early_stopper = EarlyStopping(patience=es_patience) if es_patience > 0 else None
 if class_weight_tensor is not None:
     class_weight_tensor = class_weight_tensor.to(device)
 
-logger.info("Training config: latent=%d, epochs=%d, lr=%g, bs=%d, val=%.0f%%, "
+logger.info("Training config: latent=%d, epochs=%d (pretrain=%d), lr=%g, bs=%d, "
+            "val=%.0f%%, beta_max=%.2f, free_bits=%.2f, "
             "early_stop=%s, class_weights=%s, augment=%s, AMP=%s",
-            ldim, epochs, lr, bs, val_split * 100,
+            ldim, epochs, pretrain_epochs, lr, bs, val_split * 100,
+            KL_BETA_MAX, FREE_BITS,
             "patience=%d" % es_patience if es_patience > 0 else "off",
             "on" if class_weight_tensor is not None else "off",
             "on" if do_augmentation else "off",
@@ -484,6 +586,12 @@ best_val_acc = -1.0
 best_epoch = 0
 
 for epoch in range(epochs):
+    # Compute cyclical KL beta for this epoch
+    kl_beta = get_kl_beta(epoch, epochs)
+
+    # Classification active after pre-training phase
+    classify_active = has_labels and epoch >= pretrain_epochs
+
     # --- Train phase ---
     model.train()
     total_recon = 0.0
@@ -496,24 +604,31 @@ for epoch in range(epochs):
         batch_data = batch_data.to(device)
         batch_labels = batch_labels.to(device)
 
-        # Data augmentation (measurement mode only, applied on GPU)
+        # Augmentation target: original (clean) data for reconstruction
+        target_data = batch_data
         if do_augmentation and not use_tiles:
             batch_data = augment_measurements(batch_data)
 
         with torch.amp.autocast("cuda", enabled=use_amp):
-            recon, mu, logvar, z, class_logits = model(batch_data)
-            recon_loss, kl_loss = vae_loss(recon, batch_data, mu, logvar)
-            loss = recon_loss + kl_loss
+            if use_tiles:
+                recon, _, mu, logvar, z, class_logits = model(batch_data)
+                recon_loss = F.mse_loss(recon, target_data, reduction='mean')
+            else:
+                recon_mu, recon_logvar, mu, logvar, z, class_logits = model(batch_data)
+                recon_loss = gaussian_nll_loss(recon_mu, recon_logvar, target_data)
 
-            # Classification loss with class weights
-            if has_labels and class_logits is not None:
+            kl_loss = kl_divergence_free_bits(mu, logvar)
+            loss = recon_loss + kl_beta * kl_loss
+
+            # Classification loss (only after pre-training)
+            if classify_active and class_logits is not None:
                 labeled_in_batch = batch_labels >= 0
                 if labeled_in_batch.any():
                     class_loss = F.cross_entropy(
                         class_logits[labeled_in_batch],
                         batch_labels[labeled_in_batch],
                         weight=class_weight_tensor)
-                    loss = loss + sup_weight * class_loss
+                    loss = loss + effective_sup_weight * class_loss
 
                     preds = class_logits[labeled_in_batch].argmax(dim=1)
                     train_correct += (preds == batch_labels[labeled_in_batch]).sum().item()
@@ -531,8 +646,6 @@ for epoch in range(epochs):
             clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-        scheduler.step()
-
         total_recon += recon_loss.item()
         total_kl += kl_loss.item()
         n_batches += 1
@@ -541,9 +654,12 @@ for epoch in range(epochs):
     avg_kl = total_kl / max(n_batches, 1)
     train_acc = train_correct / max(train_labeled, 1)
 
+    # Step scheduler on average loss
+    scheduler.step(avg_recon + avg_kl)
+
     # --- Validation phase ---
     val_acc = -1.0
-    if val_loader and has_labels:
+    if val_loader and has_labels and classify_active:
         model.eval()
         val_correct = 0
         val_labeled = 0
@@ -551,7 +667,10 @@ for epoch in range(epochs):
             for batch_data, batch_labels in val_loader:
                 batch_data = batch_data.to(device)
                 batch_labels = batch_labels.to(device)
-                _, mu_v, _, _, class_logits_v = model(batch_data)
+                if use_tiles:
+                    _, _, mu_v, _, _, class_logits_v = model(batch_data)
+                else:
+                    _, _, mu_v, _, _, class_logits_v = model(batch_data)
                 if class_logits_v is not None:
                     labeled_v = batch_labels >= 0
                     if labeled_v.any():
@@ -564,18 +683,21 @@ for epoch in range(epochs):
             best_val_acc = val_acc
             best_epoch = epoch
 
-    # Early stopping check (on val accuracy if available, else train loss)
+    # Early stopping
     if early_stopper is not None:
         if val_acc >= 0:
             early_stopper.step(val_acc, epoch, model)
         else:
-            early_stopper.step(-avg_recon, epoch, model)  # lower recon = better
+            early_stopper.step(-avg_recon, epoch, model)
 
     # Logging
     if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == epochs - 1:
-        msg = "Epoch %d/%d: recon=%.4f, KL=%.4f" % (epoch + 1, epochs, avg_recon, avg_kl)
-        if has_labels:
+        msg = "Epoch %d/%d: recon=%.4f, KL=%.4f, beta=%.3f" % (
+            epoch + 1, epochs, avg_recon, avg_kl, kl_beta)
+        if classify_active and has_labels:
             msg += ", train_acc=%.1f%%" % (train_acc * 100)
+        elif epoch < pretrain_epochs:
+            msg += " [pretrain]"
         if val_acc >= 0:
             msg += ", val_acc=%.1f%%" % (val_acc * 100)
         current_lr = optimizer.param_groups[0]['lr']
@@ -590,15 +712,14 @@ for epoch in range(epochs):
                     (epoch + 1, early_stopper.best_epoch + 1))
         break
 
-# Restore best model if early stopping was used
+# Restore best model
 if early_stopper and early_stopper.best_state is not None:
     early_stopper.restore_best(model)
     best_epoch = early_stopper.best_epoch
 
-# Use final training accuracy for reporting
 accuracy = train_acc
 
-# 7. Encode ALL cells (both train and val) and predict
+# 7. Encode ALL cells and predict
 task.update("Encoding all cells...", current=epochs + 1, maximum=epochs + 2)
 model.eval()
 
@@ -615,6 +736,24 @@ with torch.no_grad():
         probs = F.softmax(logits, dim=1).cpu().numpy()
         pred_labels = probs.argmax(axis=1).astype(np.int32)
         pred_conf = probs.max(axis=1).astype(np.float32)
+
+    # Diagnostics
+    n_active = count_active_units(mu_all)
+    logger.info("Active latent units: %d / %d", n_active, ldim)
+    if n_active < ldim * 0.5:
+        logger.warning("Low active units (%d/%d) -- possible posterior collapse. "
+                       "Try reducing latent_dim or increasing epochs.", n_active, ldim)
+
+    # Per-feature reconstruction quality (measurement mode only)
+    if not use_tiles:
+        recon_mu_all, _ = model.decode(mu_all)
+        r2 = compute_r_squared(all_data, recon_mu_all)
+        mean_r2 = float(r2.mean())
+        logger.info("Reconstruction R-squared: mean=%.3f, min=%.3f, max=%.3f",
+                    mean_r2, float(r2.min()), float(r2.max()))
+        poor_features = [n for n, v in zip(list(marker_names), r2) if v < 0.5]
+        if poor_features:
+            logger.warning("Poorly reconstructed features (R2<0.5): %s", poor_features)
 
 logger.info("Encoding complete: %d cells x %d latent dims", n_cells, ldim)
 
@@ -669,7 +808,9 @@ task.outputs["final_recon_loss"] = float(avg_recon)
 task.outputs["final_class_accuracy"] = float(accuracy) if has_labels else -1.0
 task.outputs["best_val_accuracy"] = float(best_val_acc) if best_val_acc >= 0 else -1.0
 task.outputs["best_epoch"] = int(best_epoch + 1)
+task.outputs["active_units"] = n_active
 task.outputs["model_state_base64"] = model_b64
 task.outputs["label_names_json"] = json.dumps(class_names)
 
-logger.info("[TEST FEATURE] Autoencoder training complete (best epoch: %d)", best_epoch + 1)
+logger.info("[TEST FEATURE] Autoencoder training complete (best epoch: %d, active units: %d/%d)",
+            best_epoch + 1, n_active, ldim)
