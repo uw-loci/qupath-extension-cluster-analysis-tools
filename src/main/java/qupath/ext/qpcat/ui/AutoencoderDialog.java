@@ -52,6 +52,7 @@ public class AutoencoderDialog {
     // UI components
     private RadioButton measurementModeRadio;
     private RadioButton tileModeRadio;
+    private CheckBox includeMaskCheck;
     private ListView<String> measurementList;
     private Spinner<Integer> tileSizeSpinner;
     private ComboBox<String> normalizationCombo;
@@ -72,6 +73,7 @@ public class AutoencoderDialog {
     private List<String> trainedMeasurements;
     private String trainedInputMode;
     private int trainedTileSize;
+    private boolean trainedIncludeMask;
 
     public AutoencoderDialog(QuPathGUI qupath) {
         this.qupath = qupath;
@@ -217,6 +219,20 @@ public class AutoencoderDialog {
                 + " (all channels used automatically)");
         tileInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
 
+        includeMaskCheck = new CheckBox("Include cell mask channel");
+        includeMaskCheck.setSelected(true);
+        includeMaskCheck.setDisable(true);
+        includeMaskCheck.setTooltip(new Tooltip(
+                "Append a binary mask channel (1 inside the cell ROI, 0 outside).\n"
+                + "This tells the network which cell to classify while preserving\n"
+                + "contextual information from neighboring cells.\n\n"
+                + "Based on the CellSighter approach (Amitay et al. 2023,\n"
+                + "Nature Communications) which showed that neighbor context\n"
+                + "is informative for cell typing in multiplexed imaging.\n\n"
+                + "Recommended: ON. Disable only if you want the model to\n"
+                + "classify purely based on local image content without\n"
+                + "knowing which cell is the target."));
+
         HBox tileRow = new HBox(10, new Label("Tile size (px):"), tileSizeSpinner, tileInfo);
         tileRow.setAlignment(Pos.CENTER_LEFT);
         tileRow.setDisable(true);
@@ -226,6 +242,7 @@ public class AutoencoderDialog {
             measurementList.setDisable(!newVal);
             tileSizeSpinner.setDisable(newVal);
             tileRow.setDisable(newVal);
+            includeMaskCheck.setDisable(newVal);
         });
 
         normalizationCombo = new ComboBox<>(FXCollections.observableArrayList(
@@ -241,7 +258,7 @@ public class AutoencoderDialog {
 
         VBox section = new VBox(5, heading,
                 measurementModeRadio, measurementList,
-                tileModeRadio, tileRow,
+                tileModeRadio, tileRow, includeMaskCheck,
                 normRow);
         VBox.setVgrow(measurementList, Priority.ALWAYS);
         return section;
@@ -418,6 +435,7 @@ public class AutoencoderDialog {
         String normId = getNormId();
         String inputMode = useTiles ? "tiles" : "measurements";
         int tileSize = tileSizeSpinner.getValue();
+        boolean includeMask = useTiles && includeMaskCheck.isSelected();
 
         Thread thread = new Thread(() -> {
             try {
@@ -425,7 +443,7 @@ public class AutoencoderDialog {
                 Map<String, Object> result = workflow.runAutoencoderTraining(
                         selectedMeasurements, normId,
                         latentDim, epochs, lr, batchSize, supWeight,
-                        inputMode, tileSize,
+                        inputMode, tileSize, includeMask,
                         progress);
 
                 trainedModelState = (String) result.get("model_state");
@@ -433,6 +451,7 @@ public class AutoencoderDialog {
                 trainedMeasurements = selectedMeasurements;
                 trainedInputMode = inputMode;
                 trainedTileSize = tileSize;
+                trainedIncludeMask = includeMask;
 
                 double accuracy = ((Number) result.get("accuracy")).doubleValue();
                 int nClasses = ((Number) result.get("n_classes")).intValue();
@@ -516,7 +535,7 @@ public class AutoencoderDialog {
                 workflow.applyAutoencoderToProject(
                         entries, trainedMeasurements, trainedModelState,
                         trainedClassNames, trainedInputMode, trainedTileSize,
-                        progress);
+                        trainedIncludeMask, progress);
 
                 Platform.runLater(() -> {
                     statusLabel.setText("Applied to " + entries.size() + " images.");

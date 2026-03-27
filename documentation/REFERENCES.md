@@ -445,6 +445,12 @@ Graph convolution on spatial neighbor graphs is a standard technique in graph ne
 
 **Used in:** [TEST] Autoencoder Classifier (architecture adapted for continuous protein measurements with Gaussian likelihood)
 
+**Cell mask as attention channel (CellSighter approach):**
+> Amitay Y, Bussi Y, Feinstein B, et al. "CellSighter: a neural network to classify cells in highly multiplexed images." *Nature Communications* 14, 4302 (2023).
+> https://doi.org/10.1038/s41467-023-40066-7
+
+**Used in:** [TEST] Autoencoder Classifier tile mode -- cell ROI mask appended as extra channel, preserving neighbor context
+
 ---
 
 ## Key Application Papers (Multiplexed Imaging)

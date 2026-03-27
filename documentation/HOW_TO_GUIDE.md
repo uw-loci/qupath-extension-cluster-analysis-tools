@@ -293,15 +293,20 @@ Train a VAE-based classifier on labeled cells, then apply across the project. Th
 
 ### Training
 
-1. **Label cells** in QuPath using the standard classification tools (right-click > Set class). Label 100-200 cells per cell type for best results.
+1. **Label cells** in QuPath using the standard classification tools (right-click > Set class). Label 100-200 cells per cell type for best results. Cluster labels (e.g., "Cluster 0") are ignored -- only your custom class names are used.
 2. **Extensions > QP-CAT > [TEST] Autoencoder Classifier...**
-3. **Select measurements** to use as input (typically "Mean" channel intensities)
-4. Adjust training parameters if desired (defaults work well for most cases):
-   - Latent dimensions: 16 (how compressed the representation is)
-   - Epochs: 100 (training iterations)
-   - Supervision weight: 1.0 (how strongly labels influence the model)
-5. Click **Train on Current Image**
-6. Review accuracy on labeled cells
+3. **Choose input mode:**
+   - **Measurements** (default, recommended): Select measurements to use (typically "Mean" channel intensities). Fast, CPU-friendly.
+   - **Tile images**: Uses pixel data around each cell. Captures morphology and texture. Choose tile size (32x32 recommended). Slower, benefits from GPU.
+4. **Cell mask channel** (tile mode only, default ON): Appends a binary mask of the cell's outline as an extra channel. This tells the network which cell is the target while preserving neighbor context. Based on CellSighter (Amitay et al. 2023, Nature Communications).
+5. **Adjust training parameters** if desired (defaults work well for most cases):
+   - Latent dimensions: 16 (how compressed the representation is; 8-32 typical)
+   - Epochs: 100 (training iterations; increase for tile mode)
+   - Supervision weight: 1.0 (how strongly labels influence the model; 0 = unsupervised)
+   - Learning rate: 0.001 (reduce if training is unstable)
+   - Batch size: 128 (reduce for tile mode if out of memory)
+6. Click **Train on Current Image**
+7. Review accuracy on labeled cells in the status bar
 
 ### Applying to Project
 
@@ -309,23 +314,34 @@ After training on the current image:
 
 1. Click **Apply to All Project Images**
 2. The trained model encodes each image's cells and assigns predicted labels
-3. Results are saved automatically per image
+3. For tile mode, tiles are read from each image's server automatically
+4. Results (labels + latent features + confidence) are saved per image
 
 ### Outputs
 
 Each detection receives:
-- `AE_0` through `AE_N` measurements: learned latent features
-- `AE_confidence`: prediction confidence (0-1)
-- PathClass label: predicted cell type
+- `AE_0` through `AE_N` measurements: learned latent features (N = latent dimensions)
+- `AE_confidence`: prediction confidence (0.0-1.0, higher = more certain)
+- PathClass label: predicted cell type (only if labeled cells were provided)
 
-The latent features (AE_*) can be used as input for clustering (select them as measurements in the clustering dialog).
+The latent features (AE_*) can be used as input for clustering (select them as measurements in the clustering dialog) or visualized via UMAP.
+
+### Performance Notes
+
+- **Measurement mode**: Trains in seconds to minutes on CPU. GPU provides minimal benefit.
+- **Tile mode (32x32)**: ~2-5 min for 1k cells on CPU, ~20-60 min for 10k cells. GPU recommended.
+- **Tile mode (64x64)**: Significantly slower. GPU strongly recommended. Reduce batch size if memory errors occur.
+- **Inference** (applying to project): Much faster than training -- typically seconds per image.
+- **Memory**: Tile mode with 40+ channels and 64x64 tiles can require several GB of GPU memory.
 
 ### Tips
 
 - More labeled cells = better accuracy. Aim for 100+ per class.
-- If accuracy is low, try increasing epochs or latent dimensions.
-- Run on a well-annotated image first, then apply to the rest of the project.
-- Validate predictions by visual inspection before publishing.
+- If accuracy is low, try: increasing epochs, increasing latent dimensions, or adding more labeled cells.
+- For tile mode, start with 32x32 tiles. Only increase if the model underperforms.
+- The measurement mode is usually sufficient for marker-based phenotyping. Use tile mode when morphology or spatial texture matters.
+- Run on a well-annotated image first, validate by visual inspection, then apply to the project.
+- Low AE_confidence scores highlight uncertain predictions -- review these cells manually.
 
 ---
 

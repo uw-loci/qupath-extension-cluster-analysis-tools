@@ -256,13 +256,42 @@ Follows the scANVI pattern (Xu et al. 2021) adapted for continuous protein measu
 
 ### Input Modes
 
-- **Measurements** (default): Uses per-cell measurement values (e.g., mean channel intensities). Fast, CPU-friendly. MLP encoder/decoder.
-- **Tile images**: Uses multi-channel pixel tiles centered on each cell. Captures spatial morphology and texture. Convolutional encoder/decoder. All image channels are included automatically. Benefits from GPU.
+- **Measurements** (default): Uses per-cell measurement values (e.g., mean channel intensities). MLP encoder/decoder. Fast (seconds to minutes on CPU). No GPU required.
+- **Tile images**: Uses multi-channel pixel tiles centered on each cell. Convolutional encoder/decoder. Captures spatial morphology and texture that measurements miss. All image channels included automatically. Optionally appends a binary cell mask channel (CellSighter approach, Amitay et al. 2023, Nature Communications). Benefits from GPU; CPU is slower.
+
+### Cell Mask Channel (Tile Mode)
+
+When "Include cell mask channel" is checked (default ON), a binary mask of the target cell's ROI is appended as an extra channel. The mask acts as an attention guide:
+
+- 1.0 inside the cell boundary, 0.0 outside
+- Neighboring cell pixels are NOT zeroed out -- their context is informative
+- The network learns which cell to classify while using spatial context from neighbors
+- Based on CellSighter (Amitay et al. 2023) which showed neighbor spillover patterns help classification in multiplexed imaging
+
+### Performance Considerations
+
+| Mode | Dataset Size | Approx. Training Time (CPU) | GPU Benefit |
+|------|-------------|----------------------------|-------------|
+| Measurements | 1,000 cells | ~30 seconds | Minimal |
+| Measurements | 10,000 cells | ~3 minutes | Minimal |
+| Measurements | 50,000 cells | ~15 minutes | Moderate |
+| Tile images 32x32 | 1,000 cells | ~2-5 minutes | Significant |
+| Tile images 32x32 | 10,000 cells | ~20-60 minutes | Significant |
+| Tile images 64x64 | 10,000 cells | ~1-3 hours | Required |
+
+Tile mode is substantially slower than measurement mode because the convolutional network processes spatial pixel data. For large datasets or tile sizes above 32x32, GPU is strongly recommended.
+
+Inference (applying a trained model) is much faster than training -- typically seconds per image regardless of mode.
 
 ### Current Limitations (Test Feature)
 
 - No early stopping or learning rate scheduling
-- Model checkpoint held in memory (not persisted to disk between sessions)
+- No data augmentation for tile mode (rotation, flipping, etc.)
+- Model checkpoint held in memory only (not persisted to disk between sessions)
+- Fixed encoder architecture (3-layer conv or 2-layer MLP); no architecture tuning
+- Training loss displayed in log only, no live chart
+- No holdout validation set or cross-validation metrics
+- Tile mode with many channels (40+) and large tiles (64x64) can exhaust GPU memory
 - Results should be validated before use in published analyses
 
 ---

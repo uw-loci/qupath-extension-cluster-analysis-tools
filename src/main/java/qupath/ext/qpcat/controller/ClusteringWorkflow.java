@@ -1156,28 +1156,37 @@ public class ClusteringWorkflow {
 
     /**
      * Reads multi-channel tile images centered on each detection's centroid.
-     * Returns float32 data packed as (nDetections, nChannels, tileSize, tileSize)
+     * Returns float32 data packed as (nDetections, totalChannels, tileSize, tileSize)
      * in row-major (C-order) layout, suitable for PyTorch conv layers (NCHW).
      * <p>
      * Uses raster.getSampleFloat() to support any bit depth (8-bit, 16-bit, 32-bit).
      * Follows the multi-channel reading pattern from the DL pixel classifier extension.
+     * <p>
+     * When {@code includeMask} is true, appends one extra channel containing a binary
+     * mask (1.0 inside the target cell's ROI, 0.0 outside). This follows the CellSighter
+     * approach (Amitay et al. 2023, Nature Communications) where the mask acts as an
+     * attention guide so the network knows which cell to classify while preserving
+     * contextual information from neighboring cells.
      *
      * @param server           the image server to read tiles from
      * @param detections       detections whose centroids define tile centers
      * @param tileSize         side length of each square tile in pixels
+     * @param includeMask      if true, append a binary cell mask channel
      * @param progressCallback optional progress callback
-     * @return float array packed as NCHW, and the channel count
+     * @return float array packed as NCHW (channels = image channels + mask if enabled)
      */
     private float[] readMultiChannelTilesAroundCentroids(
             ImageServer<BufferedImage> server,
             List<PathObject> detections,
             int tileSize,
+            boolean includeMask,
             Consumer<String> progressCallback) {
 
         int nCells = detections.size();
-        int nChannels = server.nChannels();
+        int imageChannels = server.nChannels();
+        int totalChannels = imageChannels + (includeMask ? 1 : 0);
         int halfTile = tileSize / 2;
-        float[] tileData = new float[nCells * nChannels * tileSize * tileSize];
+        float[] tileData = new float[nCells * totalChannels * tileSize * tileSize];
 
         for (int i = 0; i < nCells; i++) {
             PathObject det = detections.get(i);
@@ -1198,9 +1207,9 @@ public class ClusteringWorkflow {
                 BufferedImage tile = server.readRegion(request);
                 var raster = tile.getRaster();
 
-                // Pack as NCHW: [cell_idx][channel][y][x]
-                int cellOffset = i * nChannels * tileSize * tileSize;
-                for (int c = 0; c < nChannels; c++) {
+                // Pack image channels as NCHW: [cell_idx][channel][y][x]
+                int cellOffset = i * totalChannels * tileSize * tileSize;
+                for (int c = 0; c < imageChannels; c++) {
                     int channelOffset = cellOffset + c * tileSize * tileSize;
                     for (int ty = 0; ty < tileSize; ty++) {
                         for (int tx = 0; tx < tileSize; tx++) {
@@ -1208,7 +1217,22 @@ public class ClusteringWorkflow {
                                 tileData[channelOffset + ty * tileSize + tx] =
                                         raster.getSampleFloat(tx, ty, c);
                             }
-                            // else: default 0.0f
+                        }
+                    }
+                }
+
+                // Add binary cell mask channel (last channel)
+                if (includeMask) {
+                    java.awt.Shape roiShape = det.getROI().getShape();
+                    int maskOffset = cellOffset + imageChannels * tileSize * tileSize;
+                    for (int ty = 0; ty < tileSize; ty++) {
+                        for (int tx = 0; tx < tileSize; tx++) {
+                            // Convert tile pixel coords to image coords
+                            double imgX = x + tx;
+                            double imgY = y + ty;
+                            if (roiShape.contains(imgX, imgY)) {
+                                tileData[maskOffset + ty * tileSize + tx] = 1.0f;
+                            }
                         }
                     }
                 }
@@ -1548,6 +1572,7 @@ public class ClusteringWorkflow {
      * @param supervisionWeight    weight of classification loss
      * @param inputMode            "measurements" or "tiles"
      * @param tileSize             tile size for pixel mode (ignored in measurement mode)
+     * @param includeCellMask      if true, add cell ROI mask as extra channel (tile mode only)
      * @param progressCallback     optional progress callback
      * @return result map with model_state, class_names, accuracy, n_classes
      * @throws IOException if training fails
@@ -1556,7 +1581,7 @@ public class ClusteringWorkflow {
             List<String> selectedMeasurements, String normalization,
             int latentDim, int epochs, double learningRate,
             int batchSize, double supervisionWeight,
-            String inputMode, int tileSize,
+            String inputMode, int tileSize, boolean includeCellMask,
             Consumer<String> progressCallback) throws IOException {
 
         long startTime = System.currentTimeMillis();
@@ -1596,7 +1621,8 @@ public class ClusteringWorkflow {
             report(progressCallback, "Reading " + detections.size() + " tiles ("
                     + tileSize + "x" + tileSize + "x" + nChannels + " channels)...");
             tileData = readMultiChannelTilesAroundCentroids(
-                    server, detections, tileSize, progressCallback);
+                    server, detections, tileSize, includeCellMask, progressCallback);
+            if (includeCellMask) nChannels++; // mask added as extra channel
         }
 
         int nCells = detections.size();
@@ -1732,7 +1758,7 @@ public class ClusteringWorkflow {
             List<String> measurements,
             String modelStateBase64,
             String[] classNames,
-            String inputMode, int tileSize,
+            String inputMode, int tileSize, boolean includeCellMask,
             Consumer<String> progressCallback) throws IOException {
 
         long startTime = System.currentTimeMillis();
@@ -1768,7 +1794,8 @@ public class ClusteringWorkflow {
                 ImageServer<BufferedImage> server = imageData.getServer();
                 nChannels = server.nChannels();
                 tileBuf = readMultiChannelTilesAroundCentroids(
-                        server, detections, tileSize, null);
+                        server, detections, tileSize, includeCellMask, null);
+                if (includeCellMask) nChannels++;
             } else {
                 MeasurementExtractor extractor = new MeasurementExtractor();
                 try {
