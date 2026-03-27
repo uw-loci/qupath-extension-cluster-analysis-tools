@@ -66,7 +66,7 @@ public class AutoencoderDialog {
     private RadioButton cellsOnlyRadio;
     private Label labelSummaryLabel;
     private ListView<String> imageListView;
-    private final Map<String, SimpleBooleanProperty> imageChecks = new LinkedHashMap<>();
+    private final List<SimpleBooleanProperty> imageCheckProps = new ArrayList<>();
     private PieChart classDistributionChart;
     private Label statusLabel;
     private ProgressBar progressBar;
@@ -242,35 +242,40 @@ public class AutoencoderDialog {
         projectEntries = project.getImageList();
         List<String> imageNames = new ArrayList<>();
         for (ProjectImageEntry<BufferedImage> entry : projectEntries) {
-            String name = entry.getImageName();
-            imageNames.add(name);
+            imageNames.add(entry.getImageName());
             SimpleBooleanProperty checked = new SimpleBooleanProperty(false);
             checked.addListener((obs, o, n) -> refreshClassDistribution());
-            imageChecks.put(name, checked);
+            imageCheckProps.add(checked);
         }
         imageListView.setItems(FXCollections.observableArrayList(imageNames));
-        imageListView.setCellFactory(CheckBoxListCell.forListView(imageChecks::get));
+        // Map item index to its BooleanProperty (handles duplicate names safely)
+        imageListView.setCellFactory(CheckBoxListCell.forListView(item -> {
+            int idx = imageListView.getItems().indexOf(item);
+            return idx >= 0 && idx < imageCheckProps.size()
+                    ? imageCheckProps.get(idx) : new SimpleBooleanProperty(false);
+        }));
 
         // Pre-check current image
-        if (qupath.getImageData() != null) {
+        if (qupath.getImageData() != null && qupath.getProject() != null) {
             var currentEntry = qupath.getProject().getEntry(qupath.getImageData());
             if (currentEntry != null) {
                 int idx = projectEntries.indexOf(currentEntry);
                 if (idx >= 0) {
-                    imageChecks.get(imageNames.get(idx)).set(true);
+                    imageCheckProps.get(idx).set(true);
                 }
             }
         }
         // If nothing checked, check first
-        if (imageChecks.values().stream().noneMatch(SimpleBooleanProperty::get) && !imageNames.isEmpty()) {
-            imageChecks.get(imageNames.get(0)).set(true);
+        if (imageCheckProps.stream().noneMatch(SimpleBooleanProperty::get)
+                && !imageCheckProps.isEmpty()) {
+            imageCheckProps.get(0).set(true);
         }
 
         // Select All / Deselect All buttons
         Button selectAll = new Button("Select All");
-        selectAll.setOnAction(e -> imageChecks.values().forEach(p -> p.set(true)));
+        selectAll.setOnAction(e -> imageCheckProps.forEach(p -> p.set(true)));
         Button deselectAll = new Button("Deselect All");
-        deselectAll.setOnAction(e -> imageChecks.values().forEach(p -> p.set(false)));
+        deselectAll.setOnAction(e -> imageCheckProps.forEach(p -> p.set(false)));
         HBox btnRow = new HBox(5, selectAll, deselectAll);
 
         return new VBox(5, heading, imageListView, btnRow);
@@ -314,6 +319,7 @@ public class AutoencoderDialog {
 
         tileModeRadio = new RadioButton("Tile images (pixel data around each cell)");
         tileModeRadio.setToggleGroup(inputModeGroup);
+        tileModeRadio.setSelected("tiles".equals(QpcatPreferences.getAeInputMode()));
         tileModeRadio.setTooltip(new Tooltip(
                 "Use multi-channel image tiles centered on each cell.\n"
                 + "Captures spatial morphology and texture patterns.\n"
@@ -525,7 +531,7 @@ public class AutoencoderDialog {
 
         // Count checked images for the summary
         int nCheckedImages = 0;
-        for (var prop : imageChecks.values()) {
+        for (var prop : imageCheckProps) {
             if (prop.get()) nCheckedImages++;
         }
         if (projectEntries.isEmpty()) nCheckedImages = 1; // current image only
@@ -546,28 +552,11 @@ public class AutoencoderDialog {
         if (cellsOnly) dets.removeIf(d -> !d.isCell());
         totalCells = dets.size();
 
-        // Count from detection classifications
-        // Unclassified (null/NULL_CLASS) is a valid class
-        if (useDetections) {
-            for (PathObject det : dets) {
-                PathClass pc = det.getPathClass();
-                String name;
-                Integer color;
-                if (pc == null || pc == PathClass.getNullClass()) {
-                    name = "Unclassified";
-                    color = 0x404040; // gray
-                } else {
-                    name = pc.toString();
-                    if (name.startsWith("Cluster ")) continue;
-                    color = pc.getColor();
-                }
-                classCounts.merge(name, 1, Integer::sum);
-                classColors.putIfAbsent(name, color);
-                totalLabeled++;
-            }
-        }
+        // Assign one label per detection using same priority as extractClassLabels:
+        // locked annotations first, then points, then detection class (overrides)
+        Map<PathObject, String> assigned = new HashMap<>();
+        Map<PathObject, Integer> assignedColor = new HashMap<>();
 
-        // Count from locked annotations
         if (useLocked) {
             for (PathObject annotation : hierarchy.getAnnotationObjects()) {
                 if (!annotation.isLocked()) continue;
@@ -575,21 +564,17 @@ public class AutoencoderDialog {
                 if (pc == null || pc == PathClass.getNullClass()) continue;
                 String className = pc.toString();
                 if (className.startsWith("Cluster ")) continue;
-                var inside = hierarchy.getAllDetectionsForROI(annotation.getROI());
-                int count = 0;
-                for (PathObject det : inside) {
+                for (PathObject det : hierarchy.getAllDetectionsForROI(annotation.getROI())) {
                     if (cellsOnly && !det.isCell()) continue;
-                    count++;
-                }
-                if (count > 0) {
-                    classCounts.merge(className, count, Integer::sum);
-                    classColors.putIfAbsent(className, pc.getColor());
-                    totalLabeled += count;
+                    if (!assigned.containsKey(det)) {
+                        assigned.put(det, className);
+                        assignedColor.put(det, pc.getColor());
+                    }
                 }
             }
         }
 
-        // Count from point annotations
+        // Points: count points directly (nearest-neighbor matching only done at training time)
         if (usePoints) {
             for (PathObject annotation : hierarchy.getAnnotationObjects()) {
                 if (annotation.getROI() == null || !annotation.getROI().isPoint()) continue;
@@ -602,6 +587,35 @@ public class AutoencoderDialog {
                 classColors.putIfAbsent(className, pc.getColor());
                 totalLabeled += nPoints;
             }
+        }
+
+        // Detection classes override locked annotation labels
+        if (useDetections) {
+            for (PathObject det : dets) {
+                PathClass pc = det.getPathClass();
+                String name;
+                Integer color;
+                if (pc == null || pc == PathClass.getNullClass()) {
+                    name = "Unclassified";
+                    color = 0x404040;
+                } else {
+                    name = pc.toString();
+                    if (name.startsWith("Cluster ")) continue;
+                    color = pc.getColor();
+                }
+                // Detection class overrides other sources
+                assigned.put(det, name);
+                assignedColor.put(det, color);
+            }
+        }
+
+        // Count from assigned map (excludes point-based counts already added above)
+        for (var entry : assigned.entrySet()) {
+            if (!dets.contains(entry.getKey())) continue; // skip non-matching type
+            String name = entry.getValue();
+            classCounts.merge(name, 1, Integer::sum);
+            classColors.putIfAbsent(name, assignedColor.get(entry.getKey()));
+            totalLabeled++;
         }
 
         // Update summary label

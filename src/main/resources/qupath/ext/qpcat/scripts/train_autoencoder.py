@@ -584,6 +584,10 @@ logger.info("Training config: latent=%d, epochs=%d (pretrain=%d), lr=%g, bs=%d, 
 # 6. Training loop
 best_val_acc = -1.0
 best_epoch = 0
+train_acc = 0.0
+avg_recon = 0.0
+avg_kl = 0.0
+n_active = 0
 
 for epoch in range(epochs):
     # Compute cyclical KL beta for this epoch

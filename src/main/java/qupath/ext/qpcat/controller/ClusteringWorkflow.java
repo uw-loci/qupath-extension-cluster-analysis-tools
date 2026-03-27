@@ -1885,9 +1885,21 @@ public class ClusteringWorkflow {
             report(progressCallback, "Processing image " + (idx + 1) + "/"
                     + imageEntries.size() + ": " + entry.getImageName());
 
+            // Use in-memory ImageData for the currently-open image to ensure
+            // modifications are visible in the QuPath viewer and not overwritten
+            // when the user saves via QuPath's normal save mechanism.
             ImageData<BufferedImage> imageData;
+            boolean isCurrentImage = false;
             try {
-                imageData = entry.readImageData();
+                var currentData = qupath.getImageData();
+                var currentEntry = (qupath.getProject() != null && currentData != null)
+                        ? qupath.getProject().getEntry(currentData) : null;
+                if (currentEntry != null && currentEntry.equals(entry)) {
+                    imageData = currentData;
+                    isCurrentImage = true;
+                } else {
+                    imageData = entry.readImageData();
+                }
             } catch (Exception e) {
                 logger.warn("Failed to read {}: {}", entry.getImageName(), e.getMessage());
                 continue;
@@ -2039,14 +2051,21 @@ public class ClusteringWorkflow {
                 continue;
             }
 
-            // Save results
-            try {
-                entry.saveImageData(imageData);
+            // Save results: for current image, modifications are already in the live
+            // hierarchy (viewer updates immediately). For other images, save to disk.
+            if (isCurrentImage) {
                 totalApplied++;
-                logger.info("Saved autoencoder results for {} ({} detections)",
+                logger.info("Applied autoencoder to current image {} ({} detections, in-memory)",
                         entry.getImageName(), detections.size());
-            } catch (Exception e) {
-                logger.error("Failed to save {}: {}", entry.getImageName(), e.getMessage());
+            } else {
+                try {
+                    entry.saveImageData(imageData);
+                    totalApplied++;
+                    logger.info("Saved autoencoder results for {} ({} detections)",
+                            entry.getImageName(), detections.size());
+                } catch (Exception e) {
+                    logger.error("Failed to save {}: {}", entry.getImageName(), e.getMessage());
+                }
             }
         }
 
