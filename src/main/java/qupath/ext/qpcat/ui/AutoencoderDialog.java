@@ -1,11 +1,14 @@
 package qupath.ext.qpcat.ui;
 
 import javafx.application.Platform;
+import javafx.beans.property.SimpleBooleanProperty;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.chart.PieChart;
 import javafx.scene.control.*;
-import javafx.scene.control.ToggleGroup;
+import javafx.scene.control.cell.CheckBoxListCell;
+import org.controlsfx.control.CheckComboBox;
 import javafx.scene.layout.*;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -17,6 +20,7 @@ import qupath.ext.qpcat.preferences.QpcatPreferences;
 import qupath.ext.qpcat.service.OperationLogger;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.images.ImageData;
 import qupath.lib.objects.PathObject;
 import qupath.lib.objects.classes.PathClass;
 import qupath.lib.projects.Project;
@@ -28,23 +32,12 @@ import java.util.function.Consumer;
 
 /**
  * [TEST FEATURE] Dialog for training and applying an autoencoder-based cell classifier.
- * <p>
- * Users label representative cells in QuPath using the standard PathClass tools,
- * then train a variational autoencoder (VAE) with a semi-supervised classifier head.
- * The trained model can be applied across all images in a project.
- * <p>
- * Architecture follows the scANVI pattern (Xu et al. 2021, Molecular Systems Biology)
- * adapted for continuous protein measurements (Gaussian likelihood).
- * <p>
- * This is a <b>test feature</b> under active development. Results should be
- * validated before use in published analyses.
  *
  * @since 0.2.0
  */
 public class AutoencoderDialog {
 
     private static final Logger logger = LoggerFactory.getLogger(AutoencoderDialog.class);
-
     private static final String TEST_BADGE = "[TEST] ";
 
     private final QuPathGUI qupath;
@@ -54,7 +47,7 @@ public class AutoencoderDialog {
     private RadioButton measurementModeRadio;
     private RadioButton tileModeRadio;
     private CheckBox includeMaskCheck;
-    private ListView<String> measurementList;
+    private CheckComboBox<String> measurementCombo;
     private Spinner<Integer> tileSizeSpinner;
     private ComboBox<String> normalizationCombo;
     private Spinner<Integer> latentDimSpinner;
@@ -73,12 +66,17 @@ public class AutoencoderDialog {
     private RadioButton cellsOnlyRadio;
     private Label labelSummaryLabel;
     private ListView<String> imageListView;
+    private final Map<String, SimpleBooleanProperty> imageChecks = new LinkedHashMap<>();
+    private PieChart classDistributionChart;
     private Label statusLabel;
     private ProgressBar progressBar;
     private Button trainButton;
     private Button applyProjectButton;
 
-    // Trained model state (base64 checkpoint), held in memory for project application
+    // Project image entries (parallel to imageListView items)
+    private List<ProjectImageEntry<BufferedImage>> projectEntries = List.of();
+
+    // Trained model state
     private String trainedModelState;
     private String[] trainedClassNames;
     private List<String> trainedMeasurements;
@@ -123,20 +121,21 @@ public class AutoencoderDialog {
                 createButtonSection()
         );
 
-        // Wrap in ScrollPane so all content is accessible
         ScrollPane scrollPane = new ScrollPane(content);
         scrollPane.setFitToWidth(true);
-        scrollPane.setPrefViewportHeight(700);
-        scrollPane.setPrefViewportWidth(620);
+        scrollPane.setPrefViewportHeight(750);
+        scrollPane.setPrefViewportWidth(650);
 
         dialog.getDialogPane().setContent(scrollPane);
         dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
 
-        // Populate label summary on show
-        Platform.runLater(this::refreshLabelSummary);
+        // Initial refresh
+        Platform.runLater(this::refreshClassDistribution);
 
         dialog.show();
     }
+
+    // ==================== Section Builders ====================
 
     private HBox createTestBanner() {
         Label banner = new Label(
@@ -176,16 +175,17 @@ public class AutoencoderDialog {
         detectionsRadio.setToggleGroup(objectTypeGroup);
         detectionsRadio.setSelected(!QpcatPreferences.isAeCellsOnly());
         detectionsRadio.setTooltip(new Tooltip(
-                "Train and classify all detection objects,\n"
-                + "regardless of whether they have nucleus/cytoplasm."));
+                "Train and classify all detection objects."));
 
         cellsOnlyRadio = new RadioButton("Cell objects only (nucleus + cytoplasm)");
         cellsOnlyRadio.setToggleGroup(objectTypeGroup);
         cellsOnlyRadio.setSelected(QpcatPreferences.isAeCellsOnly());
         cellsOnlyRadio.setTooltip(new Tooltip(
                 "Train and classify only cell objects (PathCellObject)\n"
-                + "which have distinct nucleus and cytoplasm compartments.\n"
-                + "Other detection types are ignored."));
+                + "which have distinct nucleus and cytoplasm compartments."));
+
+        // Refresh chart when object type changes
+        detectionsRadio.selectedProperty().addListener((obs, o, n) -> refreshClassDistribution());
 
         HBox row = new HBox(15, detectionsRadio, cellsOnlyRadio);
         return new VBox(5, heading, row);
@@ -200,16 +200,14 @@ public class AutoencoderDialog {
         labelLockedCheck.setTooltip(new Tooltip(
                 "Label detections based on locked, classified annotations.\n"
                 + "All detections inside a locked annotation inherit its class.\n\n"
-                + "Workflow: draw annotation -> assign class -> lock it.\n"
-                + "Efficient for labeling many cells in a region at once."));
+                + "Workflow: draw annotation -> assign class -> lock it."));
 
         labelPointsCheck = new CheckBox("Point annotations (per-cell labeling)");
         labelPointsCheck.setSelected(QpcatPreferences.isAeLabelFromPoints());
         labelPointsCheck.setTooltip(new Tooltip(
                 "Label individual cells via classified point annotations.\n"
                 + "Each point labels the nearest detection within 50 pixels.\n\n"
-                + "Workflow: select Points tool -> assign class -> click on cells.\n"
-                + "Precise for labeling specific cells one at a time."));
+                + "Workflow: select Points tool -> assign class -> click on cells."));
 
         labelDetectionsCheck = new CheckBox("Existing detection classifications");
         labelDetectionsCheck.setSelected(QpcatPreferences.isAeLabelFromDetections());
@@ -218,10 +216,10 @@ public class AutoencoderDialog {
                 + "Ignores 'Cluster *' labels from prior clustering runs.\n\n"
                 + "Off by default to avoid inheriting old cluster labels."));
 
-        // Update summary when sources change
-        labelLockedCheck.selectedProperty().addListener((obs, o, n) -> refreshLabelSummary());
-        labelPointsCheck.selectedProperty().addListener((obs, o, n) -> refreshLabelSummary());
-        labelDetectionsCheck.selectedProperty().addListener((obs, o, n) -> refreshLabelSummary());
+        // Refresh chart when label sources change
+        labelLockedCheck.selectedProperty().addListener((obs, o, n) -> refreshClassDistribution());
+        labelPointsCheck.selectedProperty().addListener((obs, o, n) -> refreshClassDistribution());
+        labelDetectionsCheck.selectedProperty().addListener((obs, o, n) -> refreshClassDistribution());
 
         return new VBox(5, heading, labelLockedCheck, labelPointsCheck, labelDetectionsCheck);
     }
@@ -231,17 +229,9 @@ public class AutoencoderDialog {
         heading.setStyle("-fx-font-weight: bold;");
 
         imageListView = new ListView<>();
-        imageListView.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
         imageListView.setMinHeight(80);
         imageListView.setMaxHeight(120);
-        imageListView.setTooltip(new Tooltip(
-                "Select which project images to include in training.\n"
-                + "Multi-image training combines detections from all selected\n"
-                + "images for a more robust classifier.\n\n"
-                + "The current image is always pre-selected.\n"
-                + "Ctrl+click or Shift+click to select multiple images."));
 
-        // Populate from project
         Project<BufferedImage> project = qupath.getProject();
         if (project == null || project.getImageList().isEmpty()) {
             Label noProject = new Label("No project open -- training on current image only.");
@@ -249,72 +239,77 @@ public class AutoencoderDialog {
             return new VBox(5, heading, noProject);
         }
 
-        List<ProjectImageEntry<BufferedImage>> entries = project.getImageList();
+        projectEntries = project.getImageList();
         List<String> imageNames = new ArrayList<>();
-        for (ProjectImageEntry<BufferedImage> entry : entries) {
-            imageNames.add(entry.getImageName());
+        for (ProjectImageEntry<BufferedImage> entry : projectEntries) {
+            String name = entry.getImageName();
+            imageNames.add(name);
+            SimpleBooleanProperty checked = new SimpleBooleanProperty(false);
+            checked.addListener((obs, o, n) -> refreshClassDistribution());
+            imageChecks.put(name, checked);
         }
         imageListView.setItems(FXCollections.observableArrayList(imageNames));
-        logger.debug("Populated image list with {} images", imageNames.size());
+        imageListView.setCellFactory(CheckBoxListCell.forListView(imageChecks::get));
 
-        // Pre-select current image
+        // Pre-check current image
         if (qupath.getImageData() != null) {
             var currentEntry = qupath.getProject().getEntry(qupath.getImageData());
             if (currentEntry != null) {
-                int idx = entries.indexOf(currentEntry);
+                int idx = projectEntries.indexOf(currentEntry);
                 if (idx >= 0) {
-                    imageListView.getSelectionModel().select(idx);
+                    imageChecks.get(imageNames.get(idx)).set(true);
                 }
             }
         }
-        if (imageListView.getSelectionModel().isEmpty()) {
-            imageListView.getSelectionModel().selectFirst();
+        // If nothing checked, check first
+        if (imageChecks.values().stream().noneMatch(SimpleBooleanProperty::get) && !imageNames.isEmpty()) {
+            imageChecks.get(imageNames.get(0)).set(true);
         }
 
-        Label hint = new Label("Select multiple images for more robust training. "
-                + "Labels are read from each image independently.");
-        hint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
-        hint.setWrapText(true);
+        // Select All / Deselect All buttons
+        Button selectAll = new Button("Select All");
+        selectAll.setOnAction(e -> imageChecks.values().forEach(p -> p.set(true)));
+        Button deselectAll = new Button("Deselect All");
+        deselectAll.setOnAction(e -> imageChecks.values().forEach(p -> p.set(false)));
+        HBox btnRow = new HBox(5, selectAll, deselectAll);
 
-        return new VBox(5, heading, imageListView, hint);
+        return new VBox(5, heading, imageListView, btnRow);
     }
 
     private VBox createLabelSummarySection() {
         labelSummaryLabel = new Label("Scanning...");
         labelSummaryLabel.setWrapText(true);
 
-        Button refreshBtn = new Button("Refresh");
-        refreshBtn.setOnAction(e -> refreshLabelSummary());
-        refreshBtn.setTooltip(new Tooltip(
-                "Re-scan detections for class labels.\n"
-                + "Label cells in QuPath first using the classification tools,\n"
-                + "then click Refresh to update the count."));
-
-        HBox row = new HBox(10, labelSummaryLabel, refreshBtn);
-        row.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(labelSummaryLabel, Priority.ALWAYS);
+        // Pie chart for class distribution
+        classDistributionChart = new PieChart();
+        classDistributionChart.setLegendVisible(false);
+        classDistributionChart.setLabelsVisible(true);
+        classDistributionChart.setLabelLineLength(10);
+        classDistributionChart.setPrefHeight(200);
+        classDistributionChart.setMaxHeight(200);
+        classDistributionChart.setVisible(false);
+        classDistributionChart.setManaged(false);
 
         Label hint = new Label(
                 "Tip: Label 100-200 cells per class for best results. "
-                + "Unlabeled cells are included for reconstruction but not classification.");
+                + "Unlabeled cells contribute to reconstruction but not classification.");
         hint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
         hint.setWrapText(true);
 
-        return new VBox(5, row, hint);
+        return new VBox(5, labelSummaryLabel, classDistributionChart, hint);
     }
 
     private VBox createMeasurementSection() {
         Label heading = new Label("Input Data");
         heading.setStyle("-fx-font-weight: bold;");
 
-        // Input mode toggle
         ToggleGroup inputModeGroup = new ToggleGroup();
         measurementModeRadio = new RadioButton("Cell measurements");
         measurementModeRadio.setToggleGroup(inputModeGroup);
         measurementModeRadio.setSelected(!"tiles".equals(QpcatPreferences.getAeInputMode()));
         measurementModeRadio.setTooltip(new Tooltip(
                 "Use per-cell measurement values as input.\n"
-                + "All selected measurements are used (intensity, morphology, etc.).\n"
+                + "All checked measurements are used (intensity, morphology, etc.).\n"
                 + "Fast, works on CPU. Recommended for most cases."));
 
         tileModeRadio = new RadioButton("Tile images (pixel data around each cell)");
@@ -324,26 +319,28 @@ public class AutoencoderDialog {
                 + "Captures spatial morphology and texture patterns.\n"
                 + "Slower, benefits from GPU. Uses all image channels."));
 
-        // Measurement list
-        measurementList = new ListView<>();
-        measurementList.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-        measurementList.setMinHeight(100);
-        measurementList.setMaxHeight(150);
-        measurementList.setTooltip(new Tooltip(
-                "Select which measurements to use as input features.\n"
+        // Measurement CheckComboBox (dropdown with checkboxes, right-click to select/deselect all)
+        measurementCombo = new CheckComboBox<>();
+        measurementCombo.setMaxWidth(Double.MAX_VALUE);
+        measurementCombo.setTooltip(new Tooltip(
+                "Check which measurements to use as input features.\n"
                 + "All measurement types available: intensity, morphology, texture, etc.\n"
-                + "By default, all measurements are selected."));
+                + "Right-click for Select All / Deselect All."));
 
         if (qupath.getImageData() != null) {
             var detections = qupath.getImageData().getHierarchy().getDetectionObjects();
             if (!detections.isEmpty()) {
                 List<String> allMeasurements = MeasurementExtractor.getAllMeasurements(detections);
-                measurementList.setItems(FXCollections.observableArrayList(allMeasurements));
-                measurementList.getSelectionModel().selectAll();
+                measurementCombo.getItems().addAll(allMeasurements);
+                // Select all by default
+                measurementCombo.getCheckModel().checkAll();
             }
         }
+        updateMeasurementComboTitle();
+        measurementCombo.getCheckModel().getCheckedItems().addListener(
+                (javafx.collections.ListChangeListener<String>) c -> updateMeasurementComboTitle());
 
-        // Compute suggested tile size from cell dimensions
+        // Tile size
         int suggestedTileSize = QpcatPreferences.getAeTileSize();
         int nChannels = 0;
         String tileSizeHint = "";
@@ -352,12 +349,9 @@ public class AutoencoderDialog {
             var dets = qupath.getImageData().getHierarchy().getDetectionObjects();
             if (!dets.isEmpty()) {
                 double[] diameters = dets.stream()
-                        .mapToDouble(d -> {
-                            var roi = d.getROI();
-                            return Math.max(roi.getBoundsWidth(), roi.getBoundsHeight());
-                        })
-                        .sorted()
-                        .toArray();
+                        .mapToDouble(d -> Math.max(d.getROI().getBoundsWidth(),
+                                                    d.getROI().getBoundsHeight()))
+                        .sorted().toArray();
                 int p95idx = Math.min((int) (diameters.length * 0.95), diameters.length - 1);
                 double p95 = diameters[p95idx];
                 int computed = Math.max(16, ((int) Math.round(p95 * 1.5) + 7) / 8 * 8);
@@ -374,11 +368,7 @@ public class AutoencoderDialog {
         tileSizeSpinner.setDisable(true);
         tileSizeSpinner.setTooltip(new Tooltip(
                 "Size of the square tile around each cell centroid (pixels).\n"
-                + "Auto-computed from the 95th percentile cell diameter\n"
-                + "plus 50% padding for neighbor context. This ensures\n"
-                + "nearly all cells fit entirely within the tile.\n"
-                + "The cell mask channel identifies the target cell.\n"
-                + "Override manually if needed (16-256 px)."));
+                + "Auto-computed from 95th percentile cell size + context."));
 
         Label tileInfo = new Label("Channels: " + nChannels + tileSizeHint);
         tileInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
@@ -387,19 +377,15 @@ public class AutoencoderDialog {
         includeMaskCheck.setSelected(QpcatPreferences.isAeIncludeMask());
         includeMaskCheck.setDisable(true);
         includeMaskCheck.setTooltip(new Tooltip(
-                "Append a binary mask channel (1 inside the cell ROI, 0 outside).\n"
-                + "This tells the network which cell to classify while preserving\n"
-                + "contextual information from neighboring cells.\n\n"
-                + "Based on the CellSighter approach (Amitay et al. 2023,\n"
-                + "Nature Communications)."));
+                "Append a binary mask channel (1 inside cell ROI, 0 outside).\n"
+                + "CellSighter approach (Amitay et al. 2023, Nat. Comm.)."));
 
         HBox tileRow = new HBox(10, new Label("Tile size (px):"), tileSizeSpinner, tileInfo);
         tileRow.setAlignment(Pos.CENTER_LEFT);
         tileRow.setDisable(true);
 
-        // Toggle visibility based on mode
         measurementModeRadio.selectedProperty().addListener((obs, oldVal, newVal) -> {
-            measurementList.setDisable(!newVal);
+            measurementCombo.setDisable(!newVal);
             tileSizeSpinner.setDisable(newVal);
             tileRow.setDisable(newVal);
             includeMaskCheck.setDisable(newVal);
@@ -419,7 +405,7 @@ public class AutoencoderDialog {
         normRow.setAlignment(Pos.CENTER_LEFT);
 
         return new VBox(5, heading,
-                measurementModeRadio, measurementList,
+                measurementModeRadio, measurementCombo,
                 tileModeRadio, tileRow, includeMaskCheck,
                 normRow);
     }
@@ -431,91 +417,54 @@ public class AutoencoderDialog {
         latentDimSpinner = new Spinner<>(2, 128, QpcatPreferences.getAeLatentDim());
         latentDimSpinner.setEditable(true);
         latentDimSpinner.setPrefWidth(80);
-        latentDimSpinner.setTooltip(new Tooltip(
-                "Dimensionality of the learned latent space.\n"
-                + "Default: 16. Range: 2-128.\n"
-                + "Lower values = more compressed; higher = more expressive.\n"
-                + "For 20-60 markers, 8-32 is typically effective."));
+        latentDimSpinner.setTooltip(new Tooltip("Latent space dimensions (default: 16)."));
 
         epochsSpinner = new Spinner<>(10, 1000, QpcatPreferences.getAeEpochs(), 10);
         epochsSpinner.setEditable(true);
         epochsSpinner.setPrefWidth(80);
-        epochsSpinner.setTooltip(new Tooltip(
-                "Number of training epochs.\n"
-                + "Default: 100. More epochs = better fit but slower.\n"
-                + "For 1k-10k cells, 50-200 epochs is usually sufficient."));
+        epochsSpinner.setTooltip(new Tooltip("Max training epochs (default: 100). Early stopping may stop sooner."));
 
-        // Use a SpinnerValueFactory.DoubleSpinnerValueFactory with explicit format
         var lrFactory = new SpinnerValueFactory.DoubleSpinnerValueFactory(
                 0.00001, 0.1, QpcatPreferences.getAeLearningRate(), 0.0001);
         lrFactory.setConverter(new javafx.util.StringConverter<>() {
-            @Override
-            public String toString(Double v) {
-                return v == null ? "0.001" : String.format("%.5f", v);
-            }
-            @Override
-            public Double fromString(String s) {
-                try { return Double.parseDouble(s.trim()); }
-                catch (NumberFormatException e) { return 0.001; }
+            @Override public String toString(Double v) { return v == null ? "0.001" : String.format("%.5f", v); }
+            @Override public Double fromString(String s) {
+                try { return Double.parseDouble(s.trim()); } catch (NumberFormatException e) { return 0.001; }
             }
         });
         learningRateSpinner = new Spinner<>();
         learningRateSpinner.setValueFactory(lrFactory);
         learningRateSpinner.setEditable(true);
         learningRateSpinner.setPrefWidth(100);
-        learningRateSpinner.setTooltip(new Tooltip(
-                "AdamW optimizer learning rate.\n"
-                + "Default: 0.001. Reduce if training is unstable.\n"
-                + "OneCycleLR scheduler adjusts this automatically."));
+        learningRateSpinner.setTooltip(new Tooltip("AdamW learning rate (default: 0.001). OneCycleLR adjusts automatically."));
 
         batchSizeSpinner = new Spinner<>(16, 1024, QpcatPreferences.getAeBatchSize(), 32);
         batchSizeSpinner.setEditable(true);
         batchSizeSpinner.setPrefWidth(80);
-        batchSizeSpinner.setTooltip(new Tooltip(
-                "Training batch size.\n"
-                + "Default: 128. Larger = faster but uses more memory."));
+        batchSizeSpinner.setTooltip(new Tooltip("Training batch size (default: 128)."));
 
         supervisionWeightSpinner = new Spinner<>(0.0, 10.0, QpcatPreferences.getAeSupervisionWeight(), 0.1);
         supervisionWeightSpinner.setEditable(true);
         supervisionWeightSpinner.setPrefWidth(80);
-        supervisionWeightSpinner.setTooltip(new Tooltip(
-                "Weight of classification loss relative to reconstruction loss.\n"
-                + "Default: 1.0. Higher values = stronger label enforcement.\n"
-                + "Set to 0 for purely unsupervised VAE (reconstruction only)."));
+        supervisionWeightSpinner.setTooltip(new Tooltip("Classification loss weight (default: 1.0). Set to 0 for unsupervised."));
 
         valSplitSpinner = new Spinner<>(0.0, 0.5, QpcatPreferences.getAeValSplit(), 0.05);
         valSplitSpinner.setEditable(true);
         valSplitSpinner.setPrefWidth(80);
-        valSplitSpinner.setTooltip(new Tooltip(
-                "Fraction of cells held out for validation.\n"
-                + "Default: 0.2 (20%). Set to 0 to disable.\n"
-                + "Validation accuracy is used for early stopping\n"
-                + "and best-model selection."));
+        valSplitSpinner.setTooltip(new Tooltip("Validation holdout fraction (default: 0.2). Set to 0 to disable."));
 
         earlyStopSpinner = new Spinner<>(0, 100, QpcatPreferences.getAeEarlyStopPatience());
         earlyStopSpinner.setEditable(true);
         earlyStopSpinner.setPrefWidth(80);
-        earlyStopSpinner.setTooltip(new Tooltip(
-                "Early stopping patience (epochs without improvement).\n"
-                + "Default: 15. Set to 0 to disable.\n"
-                + "When validation accuracy stops improving for this\n"
-                + "many epochs, training stops and the best model\n"
-                + "is restored. Prevents overfitting."));
+        earlyStopSpinner.setTooltip(new Tooltip("Early stopping patience (default: 15). Set to 0 to disable."));
 
         classWeightsCheck = new CheckBox("Class weighting (handle imbalanced populations)");
         classWeightsCheck.setSelected(QpcatPreferences.isAeClassWeights());
-        classWeightsCheck.setTooltip(new Tooltip(
-                "Compute inverse-frequency class weights for the\n"
-                + "classification loss. Gives rare cell types more\n"
-                + "influence during training."));
+        classWeightsCheck.setTooltip(new Tooltip("Inverse-frequency weights for rare cell types."));
 
         augmentationCheck = new CheckBox("Data augmentation (noise + scaling)");
         augmentationCheck.setSelected(QpcatPreferences.isAeAugmentation());
-        augmentationCheck.setTooltip(new Tooltip(
-                "Apply random perturbations during training:\n"
-                + "  Measurement mode: Gaussian noise + per-channel scaling\n"
-                + "Improves generalization and reduces overfitting.\n"
-                + "Applied to training data only, never to validation."));
+        augmentationCheck.setTooltip(new Tooltip("Gaussian noise + per-channel scaling (measurement mode)."));
 
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -532,7 +481,7 @@ public class AutoencoderDialog {
     }
 
     private VBox createStatusSection() {
-        statusLabel = new Label("Ready -- label cells, select images, then click Train.");
+        statusLabel = new Label("Ready -- label cells, check images, then click Train.");
         progressBar = new ProgressBar(0);
         progressBar.setMaxWidth(Double.MAX_VALUE);
         progressBar.setVisible(false);
@@ -544,17 +493,14 @@ public class AutoencoderDialog {
         trainButton.setDefaultButton(true);
         trainButton.setOnAction(e -> runTraining());
         trainButton.setTooltip(new Tooltip(
-                "Train the autoencoder on detections from all selected images.\n"
-                + "Labeled cells guide the classifier; unlabeled cells\n"
-                + "contribute to reconstruction learning."));
+                "Train the autoencoder on detections from all checked images."));
 
         applyProjectButton = new Button("Apply to All Project Images");
         applyProjectButton.setDisable(true);
         applyProjectButton.setOnAction(e -> applyToProject());
         applyProjectButton.setTooltip(new Tooltip(
-                "Apply the trained classifier to ALL images in the project.\n"
-                + "WARNING: This REPLACES existing cell classifications.\n"
-                + "Back up your project first if needed."));
+                "Apply the trained classifier to ALL project images.\n"
+                + "WARNING: REPLACES existing cell classifications."));
 
         HBox box = new HBox(10, trainButton, applyProjectButton);
         box.setAlignment(Pos.CENTER_RIGHT);
@@ -562,44 +508,163 @@ public class AutoencoderDialog {
         return box;
     }
 
-    private void refreshLabelSummary() {
-        if (qupath.getImageData() == null) {
-            labelSummaryLabel.setText("No image open.");
-            return;
-        }
+    // ==================== Class Distribution Chart ====================
 
-        var detections = qupath.getImageData().getHierarchy().getDetectionObjects();
-        if (detections.isEmpty()) {
-            labelSummaryLabel.setText("No detections found.");
-            return;
-        }
+    private void refreshClassDistribution() {
+        if (classDistributionChart == null || labelSummaryLabel == null) return;
 
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        int unlabeled = 0;
-        for (PathObject det : detections) {
-            PathClass pc = det.getPathClass();
-            if (pc == null || pc == PathClass.getNullClass()) {
-                unlabeled++;
-            } else {
-                String name = pc.toString();
-                if (name.startsWith("Cluster ")) continue;
-                counts.merge(name, 1, Integer::sum);
+        boolean cellsOnly = cellsOnlyRadio != null && cellsOnlyRadio.isSelected();
+        boolean useLocked = labelLockedCheck != null && labelLockedCheck.isSelected();
+        boolean usePoints = labelPointsCheck != null && labelPointsCheck.isSelected();
+        boolean useDetections = labelDetectionsCheck != null && labelDetectionsCheck.isSelected();
+
+        // Gather detections from all checked images
+        Map<String, Integer> classCounts = new LinkedHashMap<>();
+        Map<String, Integer> classColors = new LinkedHashMap<>();
+        int totalCells = 0;
+        int totalLabeled = 0;
+
+        List<ImageData<BufferedImage>> imagesToScan = new ArrayList<>();
+
+        // Checked project images
+        for (int i = 0; i < projectEntries.size(); i++) {
+            String name = projectEntries.get(i).getImageName();
+            SimpleBooleanProperty checked = imageChecks.get(name);
+            if (checked == null || !checked.get()) continue;
+
+            try {
+                // Use current image data if it's the open image
+                var currentEntry = qupath.getProject() != null && qupath.getImageData() != null
+                        ? qupath.getProject().getEntry(qupath.getImageData()) : null;
+                if (currentEntry != null && currentEntry.equals(projectEntries.get(i))) {
+                    imagesToScan.add(qupath.getImageData());
+                } else {
+                    imagesToScan.add(projectEntries.get(i).readImageData());
+                }
+            } catch (Exception e) {
+                logger.debug("Could not read image data for {}: {}", name, e.getMessage());
             }
         }
 
+        // If no project, use current image
+        if (projectEntries.isEmpty() && qupath.getImageData() != null) {
+            imagesToScan.add(qupath.getImageData());
+        }
+
+        for (ImageData<BufferedImage> imageData : imagesToScan) {
+            var hierarchy = imageData.getHierarchy();
+            List<PathObject> dets = new ArrayList<>(hierarchy.getDetectionObjects());
+            if (cellsOnly) dets.removeIf(d -> !d.isCell());
+
+            totalCells += dets.size();
+
+            // Count from detection classifications
+            if (useDetections) {
+                for (PathObject det : dets) {
+                    PathClass pc = det.getPathClass();
+                    if (pc != null && pc != PathClass.getNullClass()) {
+                        String name = pc.toString();
+                        if (!name.startsWith("Cluster ") && !name.equals("Unclassified")) {
+                            classCounts.merge(name, 1, Integer::sum);
+                            classColors.putIfAbsent(name, pc.getColor());
+                            totalLabeled++;
+                        }
+                    }
+                }
+            }
+
+            // Count from locked annotations
+            if (useLocked) {
+                for (PathObject annotation : hierarchy.getAnnotationObjects()) {
+                    if (!annotation.isLocked()) continue;
+                    PathClass pc = annotation.getPathClass();
+                    if (pc == null || pc == PathClass.getNullClass()) continue;
+                    String className = pc.toString();
+                    if (className.startsWith("Cluster ")) continue;
+                    var inside = hierarchy.getAllDetectionsForROI(annotation.getROI());
+                    int count = 0;
+                    for (PathObject det : inside) {
+                        if (cellsOnly && !det.isCell()) continue;
+                        count++;
+                    }
+                    if (count > 0) {
+                        classCounts.merge(className, count, Integer::sum);
+                        classColors.putIfAbsent(className, pc.getColor());
+                        totalLabeled += count;
+                    }
+                }
+            }
+
+            // Count from point annotations
+            if (usePoints) {
+                for (PathObject annotation : hierarchy.getAnnotationObjects()) {
+                    if (annotation.getROI() == null || !annotation.getROI().isPoint()) continue;
+                    PathClass pc = annotation.getPathClass();
+                    if (pc == null || pc == PathClass.getNullClass()) continue;
+                    String className = pc.toString();
+                    if (className.startsWith("Cluster ")) continue;
+                    int nPoints = annotation.getROI().getNumPoints();
+                    classCounts.merge(className, nPoints, Integer::sum);
+                    classColors.putIfAbsent(className, pc.getColor());
+                    totalLabeled += nPoints;
+                }
+            }
+        }
+
+        // Update summary label
         StringBuilder sb = new StringBuilder();
-        sb.append(detections.size()).append(" cells total. ");
-        if (counts.isEmpty()) {
-            sb.append("No labeled cells found -- will train unsupervised VAE only.");
+        sb.append(totalCells).append(" ").append(cellsOnly ? "cells" : "detections")
+          .append(" total across ").append(imagesToScan.size()).append(" image(s). ");
+        if (classCounts.isEmpty()) {
+            sb.append("No labeled cells found.");
         } else {
-            sb.append(counts.size()).append(" classes: ");
-            counts.forEach((name, count) ->
+            sb.append(classCounts.size()).append(" classes, ").append(totalLabeled).append(" labeled: ");
+            classCounts.forEach((name, count) ->
                     sb.append(name).append(" (").append(count).append("), "));
             sb.setLength(sb.length() - 2);
-            sb.append(". Unlabeled: ").append(unlabeled);
         }
         labelSummaryLabel.setText(sb.toString());
+
+        // Update pie chart
+        classDistributionChart.getData().clear();
+        if (classCounts.isEmpty()) {
+            classDistributionChart.setVisible(false);
+            classDistributionChart.setManaged(false);
+            return;
+        }
+
+        classDistributionChart.setVisible(true);
+        classDistributionChart.setManaged(true);
+
+        double total = classCounts.values().stream().mapToInt(Integer::intValue).sum();
+        List<String> classNameOrder = new ArrayList<>(classCounts.keySet());
+
+        for (String name : classNameOrder) {
+            int count = classCounts.get(name);
+            double pct = (count / total) * 100.0;
+            String label = String.format("%s (%.1f%%, %d)", name, pct, count);
+            classDistributionChart.getData().add(new PieChart.Data(label, count));
+        }
+
+        // Apply QuPath class colors
+        for (int i = 0; i < classNameOrder.size(); i++) {
+            Integer color = classColors.get(classNameOrder.get(i));
+            if (color == null) continue;
+            int r = (color >> 16) & 0xFF;
+            int g = (color >> 8) & 0xFF;
+            int b = color & 0xFF;
+            String style = "-fx-pie-color: rgb(" + r + "," + g + "," + b + ");";
+            PieChart.Data data = classDistributionChart.getData().get(i);
+            if (data.getNode() != null) {
+                data.getNode().setStyle(style);
+            }
+            data.nodeProperty().addListener((obs, oldNode, newNode) -> {
+                if (newNode != null) newNode.setStyle(style);
+            });
+        }
     }
+
+    // ==================== Actions ====================
 
     private String getNormId() {
         int idx = normalizationCombo.getSelectionModel().getSelectedIndex();
@@ -608,6 +673,22 @@ public class AutoencoderDialog {
             case 1 -> "minmax";
             default -> "none";
         };
+    }
+
+    private List<String> getCheckedMeasurements() {
+        return new ArrayList<>(measurementCombo.getCheckModel().getCheckedItems());
+    }
+
+    private void updateMeasurementComboTitle() {
+        int checked = measurementCombo.getCheckModel().getCheckedItems().size();
+        int total = measurementCombo.getItems().size();
+        if (checked == 0) {
+            measurementCombo.setTitle("No measurements selected");
+        } else if (checked == total) {
+            measurementCombo.setTitle("All " + total + " measurements selected");
+        } else {
+            measurementCombo.setTitle(checked + " of " + total + " measurements selected");
+        }
     }
 
     private void runTraining() {
@@ -621,10 +702,9 @@ public class AutoencoderDialog {
         if (useTiles) {
             selectedMeasurements = List.of();
         } else {
-            selectedMeasurements = new ArrayList<>(
-                    measurementList.getSelectionModel().getSelectedItems());
+            selectedMeasurements = getCheckedMeasurements();
             if (selectedMeasurements.isEmpty()) {
-                Dialogs.showWarningNotification("QP-CAT", "Select at least one measurement.");
+                Dialogs.showWarningNotification("QP-CAT", "Check at least one measurement.");
                 return;
             }
         }
@@ -655,7 +735,6 @@ public class AutoencoderDialog {
         boolean labelDetections = labelDetectionsCheck.isSelected();
         boolean cellsOnly = cellsOnlyRadio.isSelected();
 
-        // Save preferences for next session
         QpcatPreferences.saveFromDialog(
                 latentDim, epochs, lr, batchSize, supWeight,
                 valSplit, earlyStopPatience, useClassWeights, useAugmentation,
@@ -686,15 +765,13 @@ public class AutoencoderDialog {
 
                 Platform.runLater(() -> {
                     String msg = "Training complete. ";
-                    if (accuracy >= 0) {
-                        msg += String.format("Accuracy on labeled cells: %.1f%%. ", accuracy * 100);
-                    }
+                    if (accuracy >= 0)
+                        msg += String.format("Accuracy: %.1f%%. ", accuracy * 100);
                     msg += nClasses + " classes, latent dim " + latentDim + ".";
                     statusLabel.setText(msg);
                     progressBar.setProgress(1);
                     trainButton.setDisable(false);
                     applyProjectButton.setDisable(false);
-
                     Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
                             "Autoencoder training complete.\n" + msg);
                 });
@@ -719,8 +796,7 @@ public class AutoencoderDialog {
 
     private void applyToProject() {
         if (trainedModelState == null || trainedModelState.isEmpty()) {
-            Dialogs.showWarningNotification("QP-CAT",
-                    "No trained model available. Train first.");
+            Dialogs.showWarningNotification("QP-CAT", "No trained model. Train first.");
             return;
         }
 
@@ -769,8 +845,7 @@ public class AutoencoderDialog {
                     trainButton.setDisable(false);
                     applyProjectButton.setDisable(false);
                     Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
-                            "Autoencoder classifier applied to "
-                            + entries.size() + " project images.");
+                            "Classifier applied to " + entries.size() + " project images.");
                 });
             } catch (Exception e) {
                 logger.error("Project application failed", e);
