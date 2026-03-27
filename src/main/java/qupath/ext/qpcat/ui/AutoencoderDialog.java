@@ -268,11 +268,12 @@ public class AutoencoderDialog {
 
         // Input mode toggle
         ToggleGroup inputModeGroup = new ToggleGroup();
-        measurementModeRadio = new RadioButton("Cell measurements (mean channel intensities)");
+        measurementModeRadio = new RadioButton("Cell measurements");
         measurementModeRadio.setToggleGroup(inputModeGroup);
         measurementModeRadio.setSelected(!"tiles".equals(QpcatPreferences.getAeInputMode()));
         measurementModeRadio.setTooltip(new Tooltip(
                 "Use per-cell measurement values as input.\n"
+                + "All selected measurements are used (intensity, morphology, etc.).\n"
                 + "Fast, works on CPU. Recommended for most cases."));
 
         tileModeRadio = new RadioButton("Tile images (pixel data around each cell)");
@@ -288,37 +289,62 @@ public class AutoencoderDialog {
         measurementList.setPrefHeight(100);
         measurementList.setTooltip(new Tooltip(
                 "Select which measurements to use as input features.\n"
-                + "Typically 'Mean' channel intensities work best."));
+                + "All measurement types available: intensity, morphology, texture, etc.\n"
+                + "By default, all measurements are selected."));
 
         if (qupath.getImageData() != null) {
             var detections = qupath.getImageData().getHierarchy().getDetectionObjects();
             if (!detections.isEmpty()) {
                 List<String> allMeasurements = MeasurementExtractor.getAllMeasurements(detections);
                 measurementList.setItems(FXCollections.observableArrayList(allMeasurements));
-                for (int i = 0; i < allMeasurements.size(); i++) {
-                    if (allMeasurements.get(i).contains("Mean")) {
-                        measurementList.getSelectionModel().select(i);
-                    }
-                }
+                // Select all measurements by default
+                measurementList.getSelectionModel().selectAll();
+            }
+        }
+
+        // Compute suggested tile size from median cell diameter
+        int suggestedTileSize = QpcatPreferences.getAeTileSize();
+        int nChannels = 0;
+        String tileSizeHint = "";
+        if (qupath.getImageData() != null) {
+            nChannels = qupath.getImageData().getServer().nChannels();
+            var dets = qupath.getImageData().getHierarchy().getDetectionObjects();
+            if (!dets.isEmpty()) {
+                double[] diameters = dets.stream()
+                        .mapToDouble(d -> {
+                            var roi = d.getROI();
+                            return Math.max(roi.getBoundsWidth(), roi.getBoundsHeight());
+                        })
+                        .sorted()
+                        .toArray();
+                // Use 95th percentile so nearly all cells fit entirely in the tile.
+                // The cell mask channel tells the network which cell to focus on,
+                // so extra space around smaller cells provides useful context.
+                int p95idx = Math.min((int) (diameters.length * 0.95), diameters.length - 1);
+                double p95 = diameters[p95idx];
+                // Add 50% padding for neighbor context, round to nearest 8
+                int computed = Math.max(16, ((int) Math.round(p95 * 1.5) + 7) / 8 * 8);
+                computed = Math.min(computed, 256);
+                suggestedTileSize = computed;
+                tileSizeHint = String.format(" (95th pctile cell: %.0f px, tile: %d px)",
+                        p95, computed);
             }
         }
 
         // Tile size spinner (visible in tile mode)
-        tileSizeSpinner = new Spinner<>(16, 128, QpcatPreferences.getAeTileSize(), 8);
+        tileSizeSpinner = new Spinner<>(16, 256, suggestedTileSize, 8);
         tileSizeSpinner.setEditable(true);
         tileSizeSpinner.setPrefWidth(80);
         tileSizeSpinner.setDisable(true);
         tileSizeSpinner.setTooltip(new Tooltip(
                 "Size of the square tile around each cell centroid (pixels).\n"
-                + "Default: 32. Smaller = faster, captures less context.\n"
-                + "All image channels are included automatically."));
+                + "Auto-computed from the 95th percentile cell diameter\n"
+                + "plus 50% padding for neighbor context. This ensures\n"
+                + "nearly all cells fit entirely within the tile.\n"
+                + "The cell mask channel identifies the target cell.\n"
+                + "Override manually if needed (16-256 px)."));
 
-        int nChannels = 0;
-        if (qupath.getImageData() != null) {
-            nChannels = qupath.getImageData().getServer().nChannels();
-        }
-        Label tileInfo = new Label("Channels: " + nChannels
-                + " (all channels used automatically)");
+        Label tileInfo = new Label("Channels: " + nChannels + tileSizeHint);
         tileInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
 
         includeMaskCheck = new CheckBox("Include cell mask channel");
