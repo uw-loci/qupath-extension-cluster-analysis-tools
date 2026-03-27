@@ -39,7 +39,7 @@ import java.util.function.Consumer;
  * This is a <b>test feature</b> under active development. Results should be
  * validated before use in published analyses.
  *
- * @since 0.5.0
+ * @since 0.2.0
  */
 public class AutoencoderDialog {
 
@@ -69,6 +69,8 @@ public class AutoencoderDialog {
     private CheckBox labelLockedCheck;
     private CheckBox labelPointsCheck;
     private CheckBox labelDetectionsCheck;
+    private RadioButton detectionsRadio;
+    private RadioButton cellsOnlyRadio;
     private Label labelSummaryLabel;
     private ListView<String> imageListView;
     private Label statusLabel;
@@ -83,6 +85,7 @@ public class AutoencoderDialog {
     private String trainedInputMode;
     private int trainedTileSize;
     private boolean trainedIncludeMask;
+    private boolean trainedCellsOnly;
 
     public AutoencoderDialog(QuPathGUI qupath) {
         this.qupath = qupath;
@@ -102,11 +105,10 @@ public class AutoencoderDialog {
 
         VBox content = new VBox(10);
         content.setPadding(new Insets(15));
-        content.setPrefWidth(600);
-        content.setPrefHeight(650);
 
         content.getChildren().addAll(
                 createTestBanner(),
+                createObjectTypeSection(),
                 createLabelSourceSection(),
                 createLabelSummarySection(),
                 new Separator(),
@@ -116,11 +118,18 @@ public class AutoencoderDialog {
                 new Separator(),
                 createHyperparamSection(),
                 new Separator(),
+                createWarningBanner(),
                 createStatusSection(),
                 createButtonSection()
         );
 
-        dialog.getDialogPane().setContent(content);
+        // Wrap in ScrollPane so all content is accessible
+        ScrollPane scrollPane = new ScrollPane(content);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setPrefViewportHeight(700);
+        scrollPane.setPrefViewportWidth(620);
+
+        dialog.getDialogPane().setContent(scrollPane);
         dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
 
         // Populate label summary on show
@@ -132,9 +141,7 @@ public class AutoencoderDialog {
     private HBox createTestBanner() {
         Label banner = new Label(
                 "TEST FEATURE -- This is an experimental autoencoder classifier. "
-                + "Results should be validated before use in published analyses. "
-                + "Currently uses cell measurements (mean channel intensities). "
-                + "Pixel-based (tile image) input is planned for a future version.");
+                + "Results should be validated before use in published analyses.");
         banner.setStyle("-fx-background-color: #FFF3CD; -fx-padding: 8; "
                 + "-fx-border-color: #FFEEBA; -fx-border-radius: 4; "
                 + "-fx-background-radius: 4; -fx-font-size: 11px;");
@@ -143,6 +150,45 @@ public class AutoencoderDialog {
         HBox box = new HBox(banner);
         HBox.setHgrow(banner, Priority.ALWAYS);
         return box;
+    }
+
+    private HBox createWarningBanner() {
+        Label warning = new Label(
+                "WARNING: Applying the classifier will REPLACE all existing cell/detection "
+                + "classifications. If you used detection classifications as training labels, "
+                + "back up your project first (File > Project > Export/Backup).");
+        warning.setStyle("-fx-background-color: #F8D7DA; -fx-padding: 8; "
+                + "-fx-border-color: #F5C6CB; -fx-border-radius: 4; "
+                + "-fx-background-radius: 4; -fx-font-size: 11px;");
+        warning.setWrapText(true);
+        warning.setMaxWidth(Double.MAX_VALUE);
+        HBox box = new HBox(warning);
+        HBox.setHgrow(warning, Priority.ALWAYS);
+        return box;
+    }
+
+    private VBox createObjectTypeSection() {
+        Label heading = new Label("Object Type");
+        heading.setStyle("-fx-font-weight: bold;");
+
+        ToggleGroup objectTypeGroup = new ToggleGroup();
+        detectionsRadio = new RadioButton("All detections");
+        detectionsRadio.setToggleGroup(objectTypeGroup);
+        detectionsRadio.setSelected(!QpcatPreferences.isAeCellsOnly());
+        detectionsRadio.setTooltip(new Tooltip(
+                "Train and classify all detection objects,\n"
+                + "regardless of whether they have nucleus/cytoplasm."));
+
+        cellsOnlyRadio = new RadioButton("Cell objects only (nucleus + cytoplasm)");
+        cellsOnlyRadio.setToggleGroup(objectTypeGroup);
+        cellsOnlyRadio.setSelected(QpcatPreferences.isAeCellsOnly());
+        cellsOnlyRadio.setTooltip(new Tooltip(
+                "Train and classify only cell objects (PathCellObject)\n"
+                + "which have distinct nucleus and cytoplasm compartments.\n"
+                + "Other detection types are ignored."));
+
+        HBox row = new HBox(15, detectionsRadio, cellsOnlyRadio);
+        return new VBox(5, heading, row);
     }
 
     private VBox createLabelSourceSection() {
@@ -186,7 +232,8 @@ public class AutoencoderDialog {
 
         imageListView = new ListView<>();
         imageListView.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-        imageListView.setPrefHeight(80);
+        imageListView.setMinHeight(80);
+        imageListView.setMaxHeight(120);
         imageListView.setTooltip(new Tooltip(
                 "Select which project images to include in training.\n"
                 + "Multi-image training combines detections from all selected\n"
@@ -210,7 +257,7 @@ public class AutoencoderDialog {
         imageListView.setItems(FXCollections.observableArrayList(imageNames));
         logger.debug("Populated image list with {} images", imageNames.size());
 
-        // Pre-select current image by matching against all entry identifiers
+        // Pre-select current image
         if (qupath.getImageData() != null) {
             var currentEntry = qupath.getProject().getEntry(qupath.getImageData());
             if (currentEntry != null) {
@@ -220,7 +267,6 @@ public class AutoencoderDialog {
                 }
             }
         }
-        // If nothing selected, select first
         if (imageListView.getSelectionModel().isEmpty()) {
             imageListView.getSelectionModel().selectFirst();
         }
@@ -230,15 +276,10 @@ public class AutoencoderDialog {
         hint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
         hint.setWrapText(true);
 
-        VBox section = new VBox(5, heading, imageListView, hint);
-        VBox.setVgrow(imageListView, Priority.ALWAYS);
-        return section;
+        return new VBox(5, heading, imageListView, hint);
     }
 
     private VBox createLabelSummarySection() {
-        Label heading = new Label("Cell Labels (from QuPath classifications)");
-        heading.setStyle("-fx-font-weight: bold;");
-
         labelSummaryLabel = new Label("Scanning...");
         labelSummaryLabel.setWrapText(true);
 
@@ -259,7 +300,7 @@ public class AutoencoderDialog {
         hint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
         hint.setWrapText(true);
 
-        return new VBox(5, heading, row, hint);
+        return new VBox(5, row, hint);
     }
 
     private VBox createMeasurementSection() {
@@ -283,10 +324,11 @@ public class AutoencoderDialog {
                 + "Captures spatial morphology and texture patterns.\n"
                 + "Slower, benefits from GPU. Uses all image channels."));
 
-        // Measurement list (visible in measurement mode)
+        // Measurement list
         measurementList = new ListView<>();
         measurementList.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-        measurementList.setPrefHeight(100);
+        measurementList.setMinHeight(100);
+        measurementList.setMaxHeight(150);
         measurementList.setTooltip(new Tooltip(
                 "Select which measurements to use as input features.\n"
                 + "All measurement types available: intensity, morphology, texture, etc.\n"
@@ -297,12 +339,11 @@ public class AutoencoderDialog {
             if (!detections.isEmpty()) {
                 List<String> allMeasurements = MeasurementExtractor.getAllMeasurements(detections);
                 measurementList.setItems(FXCollections.observableArrayList(allMeasurements));
-                // Select all measurements by default
                 measurementList.getSelectionModel().selectAll();
             }
         }
 
-        // Compute suggested tile size from median cell diameter
+        // Compute suggested tile size from cell dimensions
         int suggestedTileSize = QpcatPreferences.getAeTileSize();
         int nChannels = 0;
         String tileSizeHint = "";
@@ -317,12 +358,8 @@ public class AutoencoderDialog {
                         })
                         .sorted()
                         .toArray();
-                // Use 95th percentile so nearly all cells fit entirely in the tile.
-                // The cell mask channel tells the network which cell to focus on,
-                // so extra space around smaller cells provides useful context.
                 int p95idx = Math.min((int) (diameters.length * 0.95), diameters.length - 1);
                 double p95 = diameters[p95idx];
-                // Add 50% padding for neighbor context, round to nearest 8
                 int computed = Math.max(16, ((int) Math.round(p95 * 1.5) + 7) / 8 * 8);
                 computed = Math.min(computed, 256);
                 suggestedTileSize = computed;
@@ -331,7 +368,6 @@ public class AutoencoderDialog {
             }
         }
 
-        // Tile size spinner (visible in tile mode)
         tileSizeSpinner = new Spinner<>(16, 256, suggestedTileSize, 8);
         tileSizeSpinner.setEditable(true);
         tileSizeSpinner.setPrefWidth(80);
@@ -355,11 +391,7 @@ public class AutoencoderDialog {
                 + "This tells the network which cell to classify while preserving\n"
                 + "contextual information from neighboring cells.\n\n"
                 + "Based on the CellSighter approach (Amitay et al. 2023,\n"
-                + "Nature Communications) which showed that neighbor context\n"
-                + "is informative for cell typing in multiplexed imaging.\n\n"
-                + "Recommended: ON. Disable only if you want the model to\n"
-                + "classify purely based on local image content without\n"
-                + "knowing which cell is the target."));
+                + "Nature Communications)."));
 
         HBox tileRow = new HBox(10, new Label("Tile size (px):"), tileSizeSpinner, tileInfo);
         tileRow.setAlignment(Pos.CENTER_LEFT);
@@ -386,12 +418,10 @@ public class AutoencoderDialog {
         HBox normRow = new HBox(10, new Label("Normalization:"), normalizationCombo);
         normRow.setAlignment(Pos.CENTER_LEFT);
 
-        VBox section = new VBox(5, heading,
+        return new VBox(5, heading,
                 measurementModeRadio, measurementList,
                 tileModeRadio, tileRow, includeMaskCheck,
                 normRow);
-        VBox.setVgrow(measurementList, Priority.ALWAYS);
-        return section;
     }
 
     private VBox createHyperparamSection() {
@@ -415,12 +445,28 @@ public class AutoencoderDialog {
                 + "Default: 100. More epochs = better fit but slower.\n"
                 + "For 1k-10k cells, 50-200 epochs is usually sufficient."));
 
-        learningRateSpinner = new Spinner<>(0.00001, 0.1, QpcatPreferences.getAeLearningRate(), 0.0001);
+        // Use a SpinnerValueFactory.DoubleSpinnerValueFactory with explicit format
+        var lrFactory = new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0.00001, 0.1, QpcatPreferences.getAeLearningRate(), 0.0001);
+        lrFactory.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(Double v) {
+                return v == null ? "0.001" : String.format("%.5f", v);
+            }
+            @Override
+            public Double fromString(String s) {
+                try { return Double.parseDouble(s.trim()); }
+                catch (NumberFormatException e) { return 0.001; }
+            }
+        });
+        learningRateSpinner = new Spinner<>();
+        learningRateSpinner.setValueFactory(lrFactory);
         learningRateSpinner.setEditable(true);
         learningRateSpinner.setPrefWidth(100);
         learningRateSpinner.setTooltip(new Tooltip(
-                "Adam optimizer learning rate.\n"
-                + "Default: 0.001. Reduce if training is unstable."));
+                "AdamW optimizer learning rate.\n"
+                + "Default: 0.001. Reduce if training is unstable.\n"
+                + "OneCycleLR scheduler adjusts this automatically."));
 
         batchSizeSpinner = new Spinner<>(16, 1024, QpcatPreferences.getAeBatchSize(), 32);
         batchSizeSpinner.setEditable(true);
@@ -461,16 +507,13 @@ public class AutoencoderDialog {
         classWeightsCheck.setTooltip(new Tooltip(
                 "Compute inverse-frequency class weights for the\n"
                 + "classification loss. Gives rare cell types more\n"
-                + "influence during training.\n"
-                + "Recommended when cell populations are unequal\n"
-                + "(e.g., 5000 tumor cells vs 200 immune cells)."));
+                + "influence during training."));
 
         augmentationCheck = new CheckBox("Data augmentation (noise + scaling)");
         augmentationCheck.setSelected(QpcatPreferences.isAeAugmentation());
         augmentationCheck.setTooltip(new Tooltip(
                 "Apply random perturbations during training:\n"
                 + "  Measurement mode: Gaussian noise + per-channel scaling\n"
-                + "  Tile mode: not yet implemented\n"
                 + "Improves generalization and reduces overfitting.\n"
                 + "Applied to training data only, never to validation."));
 
@@ -489,19 +532,19 @@ public class AutoencoderDialog {
     }
 
     private VBox createStatusSection() {
-        statusLabel = new Label("Ready -- label cells in QuPath, then click Train.");
+        statusLabel = new Label("Ready -- label cells, select images, then click Train.");
         progressBar = new ProgressBar(0);
-        progressBar.setPrefWidth(Double.MAX_VALUE);
+        progressBar.setMaxWidth(Double.MAX_VALUE);
         progressBar.setVisible(false);
         return new VBox(5, progressBar, statusLabel);
     }
 
     private HBox createButtonSection() {
-        trainButton = new Button("Train on Current Image");
+        trainButton = new Button("Train on Selected Images");
         trainButton.setDefaultButton(true);
         trainButton.setOnAction(e -> runTraining());
         trainButton.setTooltip(new Tooltip(
-                "Train the autoencoder on detections in the current image.\n"
+                "Train the autoencoder on detections from all selected images.\n"
                 + "Labeled cells guide the classifier; unlabeled cells\n"
                 + "contribute to reconstruction learning."));
 
@@ -510,13 +553,12 @@ public class AutoencoderDialog {
         applyProjectButton.setOnAction(e -> applyToProject());
         applyProjectButton.setTooltip(new Tooltip(
                 "Apply the trained classifier to ALL images in the project.\n"
-                + "Each image's detections are encoded and classified\n"
-                + "using the model trained on the current image.\n"
-                + "Results are saved to each image automatically."));
+                + "WARNING: This REPLACES existing cell classifications.\n"
+                + "Back up your project first if needed."));
 
         HBox box = new HBox(10, trainButton, applyProjectButton);
         box.setAlignment(Pos.CENTER_RIGHT);
-        box.setPadding(new Insets(5, 0, 0, 0));
+        box.setPadding(new Insets(10, 0, 5, 0));
         return box;
     }
 
@@ -540,7 +582,6 @@ public class AutoencoderDialog {
                 unlabeled++;
             } else {
                 String name = pc.toString();
-                // Skip cluster labels from previous clustering runs
                 if (name.startsWith("Cluster ")) continue;
                 counts.merge(name, 1, Integer::sum);
             }
@@ -554,7 +595,7 @@ public class AutoencoderDialog {
             sb.append(counts.size()).append(" classes: ");
             counts.forEach((name, count) ->
                     sb.append(name).append(" (").append(count).append("), "));
-            sb.setLength(sb.length() - 2); // trim trailing ", "
+            sb.setLength(sb.length() - 2);
             sb.append(". Unlabeled: ").append(unlabeled);
         }
         labelSummaryLabel.setText(sb.toString());
@@ -578,7 +619,7 @@ public class AutoencoderDialog {
         boolean useTiles = tileModeRadio.isSelected();
         List<String> selectedMeasurements;
         if (useTiles) {
-            selectedMeasurements = List.of(); // not used in tile mode
+            selectedMeasurements = List.of();
         } else {
             selectedMeasurements = new ArrayList<>(
                     measurementList.getSelectionModel().getSelectedItems());
@@ -612,13 +653,14 @@ public class AutoencoderDialog {
         boolean labelLocked = labelLockedCheck.isSelected();
         boolean labelPoints = labelPointsCheck.isSelected();
         boolean labelDetections = labelDetectionsCheck.isSelected();
+        boolean cellsOnly = cellsOnlyRadio.isSelected();
 
         // Save preferences for next session
         QpcatPreferences.saveFromDialog(
                 latentDim, epochs, lr, batchSize, supWeight,
                 valSplit, earlyStopPatience, useClassWeights, useAugmentation,
                 inputMode, tileSize, includeMask, normId,
-                labelLocked, labelPoints, labelDetections);
+                labelLocked, labelPoints, labelDetections, cellsOnly);
 
         Thread thread = new Thread(() -> {
             try {
@@ -628,7 +670,7 @@ public class AutoencoderDialog {
                         latentDim, epochs, lr, batchSize, supWeight,
                         inputMode, tileSize, includeMask,
                         valSplit, earlyStopPatience, useClassWeights, useAugmentation,
-                        labelLocked, labelPoints, labelDetections,
+                        labelLocked, labelPoints, labelDetections, cellsOnly,
                         progress);
 
                 trainedModelState = (String) result.get("model_state");
@@ -637,6 +679,7 @@ public class AutoencoderDialog {
                 trainedInputMode = inputMode;
                 trainedTileSize = tileSize;
                 trainedIncludeMask = includeMask;
+                trainedCellsOnly = cellsOnly;
 
                 double accuracy = ((Number) result.get("accuracy")).doubleValue();
                 int nClasses = ((Number) result.get("n_classes")).intValue();
@@ -677,7 +720,7 @@ public class AutoencoderDialog {
     private void applyToProject() {
         if (trainedModelState == null || trainedModelState.isEmpty()) {
             Dialogs.showWarningNotification("QP-CAT",
-                    "No trained model available. Train on the current image first.");
+                    "No trained model available. Train first.");
             return;
         }
 
@@ -697,12 +740,10 @@ public class AutoencoderDialog {
                 TEST_BADGE + "Apply Autoencoder to Project",
                 "Apply the trained autoencoder classifier to all "
                 + entries.size() + " images in the project?\n\n"
-                + "This will:\n"
-                + "- Encode all cells through the trained model\n"
-                + "- Assign predicted class labels\n"
-                + "- Store latent features as measurements (AE_0..AE_N)\n"
-                + "- Store prediction confidence as a measurement\n"
-                + "- Save results to each image\n\n"
+                + "WARNING: This will REPLACE all existing cell/detection\n"
+                + "classifications with predicted labels.\n\n"
+                + "If you used detection classifications as training labels,\n"
+                + "make sure you have backed up your project first.\n\n"
                 + "This is a TEST FEATURE. Validate results before publishing.");
         if (!confirm) return;
 
@@ -720,7 +761,7 @@ public class AutoencoderDialog {
                 workflow.applyAutoencoderToProject(
                         entries, trainedMeasurements, trainedModelState,
                         trainedClassNames, trainedInputMode, trainedTileSize,
-                        trainedIncludeMask, progress);
+                        trainedIncludeMask, trainedCellsOnly, progress);
 
                 Platform.runLater(() -> {
                     statusLabel.setText("Applied to " + entries.size() + " images.");

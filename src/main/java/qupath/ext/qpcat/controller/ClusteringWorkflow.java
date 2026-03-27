@@ -1679,6 +1679,7 @@ public class ClusteringWorkflow {
             double validationSplit, int earlyStoppingPatience,
             boolean enableClassWeights, boolean enableAugmentation,
             boolean labelFromLocked, boolean labelFromPoints, boolean labelFromDetections,
+            boolean cellsOnly,
             Consumer<String> progressCallback) throws IOException {
 
         long startTime = System.currentTimeMillis();
@@ -1689,8 +1690,14 @@ public class ClusteringWorkflow {
 
         List<PathObject> detections = new ArrayList<>(
                 imageData.getHierarchy().getDetectionObjects());
+        if (cellsOnly) {
+            int before = detections.size();
+            detections.removeIf(d -> !d.isCell());
+            logger.info("Cell objects only: {} cells (filtered from {} detections)",
+                    detections.size(), before);
+        }
         if (detections.isEmpty())
-            throw new IOException("No detections found.");
+            throw new IOException("No " + (cellsOnly ? "cell objects" : "detections") + " found.");
 
         // Extract class labels from configured sources
         PathObjectHierarchy hierarchy = imageData.getHierarchy();
@@ -1862,6 +1869,7 @@ public class ClusteringWorkflow {
             String modelStateBase64,
             String[] classNames,
             String inputMode, int tileSize, boolean includeCellMask,
+            boolean cellsOnly,
             Consumer<String> progressCallback) throws IOException {
 
         long startTime = System.currentTimeMillis();
@@ -1880,14 +1888,52 @@ public class ClusteringWorkflow {
                 continue;
             }
 
-            List<PathObject> detections = new ArrayList<>(
+            List<PathObject> allDetections = new ArrayList<>(
                     imageData.getHierarchy().getDetectionObjects());
-            if (detections.isEmpty()) {
-                logger.info("Skipping {} - no detections", entry.getImageName());
+            if (cellsOnly) {
+                allDetections.removeIf(d -> !d.isCell());
+            }
+            if (allDetections.isEmpty()) {
+                logger.info("Skipping {} - no {} found", entry.getImageName(),
+                        cellsOnly ? "cell objects" : "detections");
                 continue;
             }
 
             boolean useTiles = "tiles".equals(inputMode);
+
+            // Filter out objects with missing measurements (measurement mode only)
+            List<PathObject> detections;
+            int skippedMissing = 0;
+            if (!useTiles && measurements != null && !measurements.isEmpty()) {
+                detections = new ArrayList<>();
+                for (PathObject det : allDetections) {
+                    boolean hasMissing = false;
+                    for (String m : measurements) {
+                        Number val = det.getMeasurements().get(m);
+                        if (val == null) {
+                            hasMissing = true;
+                            break;
+                        }
+                    }
+                    if (hasMissing) {
+                        skippedMissing++;
+                    } else {
+                        detections.add(det);
+                    }
+                }
+                if (skippedMissing > 0) {
+                    logger.error("{}: {} out of {} objects did not have all needed measurements "
+                            + "-- classification was not changed for these objects",
+                            entry.getImageName(), skippedMissing, allDetections.size());
+                }
+                if (detections.isEmpty()) {
+                    logger.error("{}: ALL objects missing measurements -- skipping image",
+                            entry.getImageName());
+                    continue;
+                }
+            } else {
+                detections = allDetections;
+            }
 
             // Prepare input data based on mode
             MeasurementExtractor.ExtractionResult extraction = null;

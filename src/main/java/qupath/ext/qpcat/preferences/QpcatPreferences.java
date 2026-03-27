@@ -63,6 +63,9 @@ public final class QpcatPreferences {
     private static final BooleanProperty aeLabelFromDetections = PathPrefs.createPersistentPreference(
             "qpcat.ae.labelFromDetections", false);
 
+    private static final BooleanProperty aeCellsOnly = PathPrefs.createPersistentPreference(
+            "qpcat.ae.cellsOnly", false);
+
     // ==================== Getters / Setters ====================
 
     public static int getAeLatentDim() { return aeLatentDim.get(); }
@@ -113,6 +116,9 @@ public final class QpcatPreferences {
     public static boolean isAeLabelFromDetections() { return aeLabelFromDetections.get(); }
     public static void setAeLabelFromDetections(boolean v) { aeLabelFromDetections.set(v); }
 
+    public static boolean isAeCellsOnly() { return aeCellsOnly.get(); }
+    public static void setAeCellsOnly(boolean v) { aeCellsOnly.set(v); }
+
     /**
      * Saves all current dialog values to persistent preferences.
      */
@@ -123,7 +129,7 @@ public final class QpcatPreferences {
                                        String inputMode, int tileSize, boolean includeMask,
                                        String normalization,
                                        boolean labelLocked, boolean labelPoints,
-                                       boolean labelDetections) {
+                                       boolean labelDetections, boolean cellsOnly) {
         setAeLatentDim(latentDim);
         setAeEpochs(epochs);
         setAeLearningRate(learningRate);
@@ -140,5 +146,6 @@ public final class QpcatPreferences {
         setAeLabelFromLockedAnnotations(labelLocked);
         setAeLabelFromPoints(labelPoints);
         setAeLabelFromDetections(labelDetections);
+        setAeCellsOnly(cellsOnly);
     }
 }
