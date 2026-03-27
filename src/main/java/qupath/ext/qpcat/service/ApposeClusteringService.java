@@ -38,7 +38,7 @@ public class ApposeClusteringService {
     private static final String ENV_NAME = "qupath-qpcat";
 
     /**
-     * Expected environment version. Must match _ENVIRONMENT_VERSION in init_services.py
+     * Expected environment version. Must match ENVIRONMENT_VERSION in init_services.py
      * and the version in build.gradle.kts.
      */
     static final String EXPECTED_ENV_VERSION = "0.2.0";
@@ -184,7 +184,7 @@ public class ApposeClusteringService {
                         "task.outputs['sklearn_version'] = sklearn.__version__\n" +
                         "task.outputs['scanpy_version'] = scanpy.__version__\n" +
                         "task.outputs['umap_version'] = umap.__version__\n" +
-                        "task.outputs['env_version'] = _ENVIRONMENT_VERSION\n";
+                        "task.outputs['env_version'] = ENVIRONMENT_VERSION\n";
 
                 Task verifyTask = pythonService.task(verifyScript);
                 verifyTask.listen(event -> {
