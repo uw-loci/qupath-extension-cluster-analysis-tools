@@ -1848,7 +1848,7 @@ public class ClusteringWorkflow {
 
         long elapsed = System.currentTimeMillis() - startTime;
         OperationLogger.getInstance().logOperation("AUTOENCODER_TRAIN",
-                Map.of("Cells", String.valueOf(extraction.getNCells()),
+                Map.of("Cells", String.valueOf(nCells),
                        "Labeled", String.valueOf(nLabeled),
                        "Classes", String.valueOf(classNames.size()),
                        "LatentDim", String.valueOf(latentDim),
