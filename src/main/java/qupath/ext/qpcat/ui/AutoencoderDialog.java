@@ -27,6 +27,10 @@ import qupath.lib.projects.Project;
 import qupath.lib.projects.ProjectImageEntry;
 
 import java.awt.image.BufferedImage;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -72,6 +76,7 @@ public class AutoencoderDialog {
     private ProgressBar progressBar;
     private Button trainButton;
     private Button applyProjectButton;
+    private Button saveModelButton;
 
     // Project image entries (parallel to imageListView items)
     private List<ProjectImageEntry<BufferedImage>> projectEntries = List.of();
@@ -494,22 +499,44 @@ public class AutoencoderDialog {
         return new VBox(5, progressBar, statusLabel);
     }
 
-    private HBox createButtonSection() {
+    private VBox createButtonSection() {
         trainButton = new Button("Train on Selected Images");
         trainButton.setDefaultButton(true);
         trainButton.setOnAction(e -> runTraining());
         trainButton.setTooltip(new Tooltip(
                 "Train the autoencoder on detections from all checked images."));
 
-        applyProjectButton = new Button("Apply to All Project Images");
+        applyProjectButton = new Button("Apply to Checked Images");
         applyProjectButton.setDisable(true);
-        applyProjectButton.setOnAction(e -> applyToProject());
+        applyProjectButton.setOnAction(e -> applyToCheckedImages());
         applyProjectButton.setTooltip(new Tooltip(
-                "Apply the trained classifier to ALL project images.\n"
-                + "WARNING: REPLACES existing cell classifications."));
+                "Apply the trained classifier to the checked images above.\n"
+                + "Uncheck training images first if you don't want to re-classify them.\n"
+                + "WARNING: REPLACES existing cell classifications on applied images."));
 
-        HBox box = new HBox(10, trainButton, applyProjectButton);
-        box.setAlignment(Pos.CENTER_RIGHT);
+        Button saveModelButton = new Button("Save Model...");
+        saveModelButton.setDisable(true);
+        saveModelButton.setOnAction(e -> saveModel());
+        saveModelButton.setTooltip(new Tooltip(
+                "Save the trained model to a file in the project folder.\n"
+                + "Can be loaded later to apply to new images."));
+
+        Button loadModelButton = new Button("Load Model...");
+        loadModelButton.setOnAction(e -> loadModel());
+        loadModelButton.setTooltip(new Tooltip(
+                "Load a previously saved autoencoder model.\n"
+                + "After loading, you can apply it to checked images."));
+
+        // Keep references for enable/disable
+        this.saveModelButton = saveModelButton;
+
+        HBox trainRow = new HBox(10, trainButton, saveModelButton, loadModelButton);
+        trainRow.setAlignment(Pos.CENTER_RIGHT);
+
+        HBox applyRow = new HBox(10, applyProjectButton);
+        applyRow.setAlignment(Pos.CENTER_RIGHT);
+
+        VBox box = new VBox(5, trainRow, applyRow);
         box.setPadding(new Insets(10, 0, 5, 0));
         return box;
     }
@@ -827,6 +854,7 @@ public class AutoencoderDialog {
                     progressBar.setProgress(1);
                     trainButton.setDisable(false);
                     applyProjectButton.setDisable(false);
+                    saveModelButton.setDisable(false);
                     Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
                             "Autoencoder training complete.\n" + msg);
                 });
@@ -849,32 +877,32 @@ public class AutoencoderDialog {
         thread.start();
     }
 
-    private void applyToProject() {
+    private void applyToCheckedImages() {
         if (trainedModelState == null || trainedModelState.isEmpty()) {
-            Dialogs.showWarningNotification("QP-CAT", "No trained model. Train first.");
+            Dialogs.showWarningNotification("QP-CAT", "No trained model. Train or load one first.");
             return;
         }
 
-        Project<BufferedImage> project = qupath.getProject();
-        if (project == null) {
-            Dialogs.showWarningNotification("QP-CAT", "No project is open.");
-            return;
+        // Get checked images
+        List<ProjectImageEntry<BufferedImage>> entries = new ArrayList<>();
+        for (int i = 0; i < projectEntries.size(); i++) {
+            if (i < imageCheckProps.size() && imageCheckProps.get(i).get()) {
+                entries.add(projectEntries.get(i));
+            }
         }
-
-        List<ProjectImageEntry<BufferedImage>> entries = project.getImageList();
         if (entries.isEmpty()) {
-            Dialogs.showWarningNotification("QP-CAT", "Project has no images.");
+            Dialogs.showWarningNotification("QP-CAT", "Check at least one image to apply to.");
             return;
         }
 
         boolean confirm = Dialogs.showConfirmDialog(
-                TEST_BADGE + "Apply Autoencoder to Project",
-                "Apply the trained autoencoder classifier to all "
-                + entries.size() + " images in the project?\n\n"
+                TEST_BADGE + "Apply Autoencoder to Checked Images",
+                "Apply the trained autoencoder classifier to "
+                + entries.size() + " checked image(s)?\n\n"
                 + "WARNING: This will REPLACE all existing cell/detection\n"
-                + "classifications with predicted labels.\n\n"
-                + "If you used detection classifications as training labels,\n"
-                + "make sure you have backed up your project first.\n\n"
+                + "classifications with predicted labels on those images.\n\n"
+                + "Tip: Uncheck training images first if you don't want\n"
+                + "to re-classify them.\n\n"
                 + "This is a TEST FEATURE. Validate results before publishing.");
         if (!confirm) return;
 
@@ -895,26 +923,222 @@ public class AutoencoderDialog {
                         trainedIncludeMask, trainedCellsOnly, progress);
 
                 Platform.runLater(() -> {
-                    statusLabel.setText("Applied to " + entries.size() + " images.");
+                    statusLabel.setText("Applied to " + entries.size() + " image(s).");
                     progressBar.setProgress(1);
                     trainButton.setDisable(false);
                     applyProjectButton.setDisable(false);
+                    saveModelButton.setDisable(false);
                     Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
-                            "Classifier applied to " + entries.size() + " project images.");
+                            "Classifier applied to " + entries.size() + " image(s).");
                 });
             } catch (Exception e) {
-                logger.error("Project application failed", e);
+                logger.error("Application failed", e);
                 Platform.runLater(() -> {
                     statusLabel.setText("Failed: " + e.getMessage());
                     progressBar.setVisible(false);
                     trainButton.setDisable(false);
                     applyProjectButton.setDisable(false);
+                    saveModelButton.setDisable(false);
                     Dialogs.showErrorNotification(TEST_BADGE + "QP-CAT",
-                            "Failed to apply to project: " + e.getMessage());
+                            "Failed to apply: " + e.getMessage());
                 });
             }
-        }, "QPCAT-AutoencoderProject");
+        }, "QPCAT-AutoencoderApply");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    // ==================== Save / Load Model ====================
+
+    private void saveModel() {
+        if (trainedModelState == null || trainedModelState.isEmpty()) {
+            Dialogs.showWarningNotification("QP-CAT", "No trained model to save.");
+            return;
+        }
+
+        Project<BufferedImage> project = qupath.getProject();
+        if (project == null) {
+            Dialogs.showWarningNotification("QP-CAT", "A project must be open to save models.");
+            return;
+        }
+
+        try {
+            Path modelsDir = project.getPath().getParent().resolve("classifiers")
+                    .resolve("autoencoder");
+            Files.createDirectories(modelsDir);
+
+            // Build metadata JSON
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("input_mode", trainedInputMode);
+            metadata.put("tile_size", trainedTileSize);
+            metadata.put("include_mask", trainedIncludeMask);
+            metadata.put("cells_only", trainedCellsOnly);
+            metadata.put("class_names", trainedClassNames != null
+                    ? List.of(trainedClassNames) : List.of());
+            metadata.put("measurements", trainedMeasurements != null
+                    ? trainedMeasurements : List.of());
+
+            // Prompt for name
+            String defaultName = "autoencoder_" + trainedClassNames.length + "classes";
+            String name = Dialogs.showInputDialog(
+                    TEST_BADGE + "Save Autoencoder Model",
+                    "Enter a name for this classifier:",
+                    defaultName);
+            if (name == null || name.isBlank()) return;
+
+            // Sanitize filename
+            name = name.replaceAll("[^a-zA-Z0-9_\\-]", "_");
+
+            // Save checkpoint (base64) and metadata
+            Path ckptFile = modelsDir.resolve(name + ".b64");
+            Path metaFile = modelsDir.resolve(name + ".json");
+
+            Files.writeString(ckptFile, trainedModelState, StandardCharsets.UTF_8);
+
+            // Simple JSON serialization
+            StringBuilder json = new StringBuilder("{\n");
+            for (var entry : metadata.entrySet()) {
+                json.append("  \"").append(entry.getKey()).append("\": ");
+                Object val = entry.getValue();
+                if (val instanceof String) {
+                    json.append("\"").append(val).append("\"");
+                } else if (val instanceof Boolean || val instanceof Number) {
+                    json.append(val);
+                } else if (val instanceof List) {
+                    json.append("[");
+                    List<?> list = (List<?>) val;
+                    for (int i = 0; i < list.size(); i++) {
+                        if (i > 0) json.append(", ");
+                        json.append("\"").append(list.get(i)).append("\"");
+                    }
+                    json.append("]");
+                }
+                json.append(",\n");
+            }
+            if (json.length() > 2)
+                json.setLength(json.length() - 2); // trim trailing comma
+            json.append("\n}");
+            Files.writeString(metaFile, json.toString(), StandardCharsets.UTF_8);
+
+            long sizeMB = Files.size(ckptFile) / (1024 * 1024);
+            statusLabel.setText("Model saved: " + name + " (" + sizeMB + " MB)");
+            Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
+                    "Model saved to:\n" + ckptFile.toAbsolutePath());
+            logger.info("Model saved to {} ({} MB)", ckptFile, sizeMB);
+
+        } catch (IOException e) {
+            logger.error("Failed to save model", e);
+            Dialogs.showErrorNotification(TEST_BADGE + "QP-CAT",
+                    "Failed to save model: " + e.getMessage());
+        }
+    }
+
+    private void loadModel() {
+        Project<BufferedImage> project = qupath.getProject();
+        if (project == null) {
+            Dialogs.showWarningNotification("QP-CAT", "A project must be open to load models.");
+            return;
+        }
+
+        Path modelsDir = project.getPath().getParent().resolve("classifiers")
+                .resolve("autoencoder");
+        if (!Files.isDirectory(modelsDir)) {
+            Dialogs.showWarningNotification("QP-CAT",
+                    "No saved models found. Train and save a model first.");
+            return;
+        }
+
+        // List available models
+        List<String> modelNames = new ArrayList<>();
+        try (var stream = Files.list(modelsDir)) {
+            stream.filter(p -> p.toString().endsWith(".b64"))
+                  .forEach(p -> {
+                      String fname = p.getFileName().toString();
+                      modelNames.add(fname.substring(0, fname.length() - 4));
+                  });
+        } catch (IOException e) {
+            logger.error("Failed to list models", e);
+            return;
+        }
+
+        if (modelNames.isEmpty()) {
+            Dialogs.showWarningNotification("QP-CAT",
+                    "No saved models found in:\n" + modelsDir);
+            return;
+        }
+
+        // Let user pick
+        String selected = Dialogs.showChoiceDialog(
+                TEST_BADGE + "Load Autoencoder Model",
+                "Select a saved model to load:",
+                modelNames, modelNames.get(0));
+        if (selected == null) return;
+
+        try {
+            Path ckptFile = modelsDir.resolve(selected + ".b64");
+            Path metaFile = modelsDir.resolve(selected + ".json");
+
+            trainedModelState = Files.readString(ckptFile, StandardCharsets.UTF_8).trim();
+
+            // Parse metadata
+            if (Files.exists(metaFile)) {
+                String metaJson = Files.readString(metaFile, StandardCharsets.UTF_8);
+                // Simple JSON parsing for known fields
+                trainedInputMode = parseJsonString(metaJson, "input_mode", "measurements");
+                trainedTileSize = parseJsonInt(metaJson, "tile_size", 64);
+                trainedIncludeMask = parseJsonBool(metaJson, "include_mask", true);
+                trainedCellsOnly = parseJsonBool(metaJson, "cells_only", false);
+                trainedClassNames = parseJsonStringArray(metaJson, "class_names");
+                trainedMeasurements = List.of(parseJsonStringArray(metaJson, "measurements"));
+            }
+
+            applyProjectButton.setDisable(false);
+            saveModelButton.setDisable(false);
+
+            String info = "Loaded: " + selected;
+            if (trainedClassNames != null) {
+                info += " (" + trainedClassNames.length + " classes: "
+                        + String.join(", ", trainedClassNames) + ")";
+            }
+            statusLabel.setText(info);
+            Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT", info);
+            logger.info("Model loaded: {} from {}", selected, ckptFile);
+
+        } catch (IOException e) {
+            logger.error("Failed to load model", e);
+            Dialogs.showErrorNotification(TEST_BADGE + "QP-CAT",
+                    "Failed to load model: " + e.getMessage());
+        }
+    }
+
+    // Simple JSON helpers (avoid adding a JSON library dependency)
+    private static String parseJsonString(String json, String key, String defaultVal) {
+        String pattern = "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"";
+        var m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        return m.find() ? m.group(1) : defaultVal;
+    }
+
+    private static int parseJsonInt(String json, String key, int defaultVal) {
+        String pattern = "\"" + key + "\"\\s*:\\s*(\\d+)";
+        var m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        return m.find() ? Integer.parseInt(m.group(1)) : defaultVal;
+    }
+
+    private static boolean parseJsonBool(String json, String key, boolean defaultVal) {
+        String pattern = "\"" + key + "\"\\s*:\\s*(true|false)";
+        var m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        return m.find() ? Boolean.parseBoolean(m.group(1)) : defaultVal;
+    }
+
+    private static String[] parseJsonStringArray(String json, String key) {
+        String pattern = "\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]";
+        var m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        if (!m.find()) return new String[0];
+        String inner = m.group(1).trim();
+        if (inner.isEmpty()) return new String[0];
+        return java.util.regex.Pattern.compile("\"([^\"]*)\"")
+                .matcher(inner).results()
+                .map(r -> r.group(1))
+                .toArray(String[]::new);
     }
 }
