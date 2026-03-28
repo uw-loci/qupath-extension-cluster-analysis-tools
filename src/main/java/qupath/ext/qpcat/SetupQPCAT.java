@@ -212,13 +212,10 @@ public class SetupQPCAT implements QuPathExtension, GitHubProject {
         // Autoencoder Classifier [TEST FEATURE]
         MenuItem autoencoderItem = new MenuItem(res.getString("menu.autoencoderClassifier"));
         autoencoderItem.setOnAction(e -> {
-            if (qupath.getImageData() == null) {
-                Dialogs.showWarningNotification(EXTENSION_NAME, "No image is open.");
-                return;
-            }
-            if (qupath.getImageData().getHierarchy().getDetectionObjects().isEmpty()) {
+            // No image required -- can train from project images without opening one
+            if (qupath.getProject() == null && qupath.getImageData() == null) {
                 Dialogs.showWarningNotification(EXTENSION_NAME,
-                        "No detections found. Run cell detection first.");
+                        "Open a project or image first.");
                 return;
             }
             new AutoencoderDialog(qupath).show();

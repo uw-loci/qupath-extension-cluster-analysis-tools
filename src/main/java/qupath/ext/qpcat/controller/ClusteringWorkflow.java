@@ -1822,7 +1822,20 @@ public class ClusteringWorkflow {
                 break;
             }
 
-            tileTempFile = Files.createTempFile("qpcat_tiles_", ".bin");
+            // Store temp file in project folder if available (may need significant disk space)
+            Path tempDir = null;
+            if (qupath.getProject() != null) {
+                try {
+                    Path projectDir = qupath.getProject().getPath().getParent();
+                    tempDir = projectDir.resolve(".qpcat_temp");
+                    Files.createDirectories(tempDir);
+                } catch (Exception e) {
+                    tempDir = null; // fall back to system temp
+                }
+            }
+            tileTempFile = tempDir != null
+                    ? Files.createTempFile(tempDir, "qpcat_tiles_", ".bin")
+                    : Files.createTempFile("qpcat_tiles_", ".bin");
             tileTempFile.toFile().deleteOnExit();
             long totalFloats = 0;
 
@@ -2106,7 +2119,17 @@ public class ClusteringWorkflow {
                 if (includeCellMask) nChannels++;
 
                 // Write tiles to temp file in batches (same pattern as training)
-                inferTileFile = Files.createTempFile("qpcat_infer_tiles_", ".bin");
+                Path inferTempDir = null;
+                if (qupath.getProject() != null) {
+                    try {
+                        Path projDir = qupath.getProject().getPath().getParent();
+                        inferTempDir = projDir.resolve(".qpcat_temp");
+                        Files.createDirectories(inferTempDir);
+                    } catch (Exception ignored) {}
+                }
+                inferTileFile = inferTempDir != null
+                        ? Files.createTempFile(inferTempDir, "qpcat_infer_", ".bin")
+                        : Files.createTempFile("qpcat_infer_", ".bin");
                 inferTileFile.toFile().deleteOnExit();
                 try (var raf = new java.io.RandomAccessFile(inferTileFile.toFile(), "rw")) {
                     int batchSz = 500;

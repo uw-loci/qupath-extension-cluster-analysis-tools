@@ -321,6 +321,40 @@ class EarlyStopping:
 
 # ==================== Data Augmentation ====================
 
+class TileMmapDataset(torch.utils.data.Dataset):
+    """Dataset that reads tiles from a memory-mapped file on demand."""
+
+    def __init__(self, mmap_array, labels, norm_method, mean_stat, std_stat, dmin_stat, dmax_stat):
+        self.mmap = mmap_array
+        self.labels = labels
+        self.norm_method = norm_method
+        # Reshape stats for NCHW broadcast: (C,) -> (C, 1, 1)
+        if mean_stat is not None:
+            self.mean = torch.tensor(mean_stat, dtype=torch.float32).view(-1, 1, 1)
+            self.std = torch.tensor(std_stat, dtype=torch.float32).view(-1, 1, 1)
+        else:
+            self.mean = self.std = None
+        if dmin_stat is not None:
+            self.dmin = torch.tensor(dmin_stat, dtype=torch.float32).view(-1, 1, 1)
+            drange = dmax_stat - dmin_stat
+            drange[drange == 0] = 1
+            self.drange = torch.tensor(drange, dtype=torch.float32).view(-1, 1, 1)
+        else:
+            self.dmin = self.drange = None
+
+    def __len__(self):
+        return len(self.mmap)
+
+    def __getitem__(self, idx):
+        tile = torch.tensor(np.array(self.mmap[idx]), dtype=torch.float32)
+        if self.norm_method == "zscore" and self.mean is not None:
+            tile = (tile - self.mean) / self.std
+        elif self.norm_method == "minmax" and self.dmin is not None:
+            tile = (tile - self.dmin) / self.drange
+        label = self.labels[idx] if idx < len(self.labels) else -1
+        return tile, torch.tensor(label, dtype=torch.long)
+
+
 def augment_measurements(data, noise_std=0.02, scale_range=0.1, dropout_p=0.1):
     """
     Measurement-space augmentation:
@@ -372,13 +406,15 @@ if use_tiles:
     img_channels = int(n_channels)
     img_tile_size = int(tile_size)
     n_cells_tile = int(n_cells)
-    # Load tiles from temp file (little-endian float32, written by Java)
+    # Memory-map tiles from temp file (little-endian float32, written by Java).
+    # mmap_mode='r' avoids loading the entire file into RAM.
     tile_path = tile_file_path
-    raw_tiles = np.fromfile(tile_path, dtype='<f4').reshape(
-        n_cells_tile, img_channels, img_tile_size, img_tile_size)
+    raw_tiles = np.memmap(tile_path, dtype='<f4', mode='r',
+                          shape=(n_cells_tile, img_channels, img_tile_size, img_tile_size))
     n_cells = raw_tiles.shape[0]
-    logger.info("Tile mode: %d cells, %d channels, %dx%d tiles (loaded from file)",
-                n_cells, img_channels, img_tile_size, img_tile_size)
+    tile_size_mb = raw_tiles.nbytes / (1024 * 1024)
+    logger.info("Tile mode: %d cells, %d channels, %dx%d tiles (%.0f MB, memory-mapped)",
+                n_cells, img_channels, img_tile_size, img_tile_size, tile_size_mb)
     data = None
     n_markers = 0
 else:
@@ -461,23 +497,37 @@ dmin_stat = None
 dmax_stat = None
 
 if use_tiles:
+    # For tiles: compute normalization stats by streaming through mmap,
+    # but don't create a full normalized copy (too much memory).
+    # Normalization is applied per-batch in the training loop instead.
     if norm_method == "zscore":
-        mean_stat = raw_tiles.mean(axis=(0, 2, 3), keepdims=True)
-        std_stat = raw_tiles.std(axis=(0, 2, 3), keepdims=True)
+        # Compute per-channel mean/std by streaming in chunks
+        chunk_size = 1000
+        ch_sum = np.zeros(img_channels, dtype=np.float64)
+        ch_sq_sum = np.zeros(img_channels, dtype=np.float64)
+        for i in range(0, n_cells, chunk_size):
+            chunk = np.array(raw_tiles[i:min(i + chunk_size, n_cells)], dtype=np.float32)
+            ch_sum += chunk.sum(axis=(0, 2, 3))
+            ch_sq_sum += (chunk ** 2).sum(axis=(0, 2, 3))
+        n_pixels = n_cells * img_tile_size * img_tile_size
+        mean_stat = (ch_sum / n_pixels).astype(np.float32)
+        std_stat = np.sqrt(ch_sq_sum / n_pixels - mean_stat ** 2).astype(np.float32)
         std_stat[std_stat == 0] = 1
-        data_norm_tiles = (raw_tiles - mean_stat) / std_stat
-        mean_stat = mean_stat.squeeze()
-        std_stat = std_stat.squeeze()
+        logger.info("Tile normalization (zscore): mean=%s, std=%s",
+                    mean_stat.tolist(), std_stat.tolist())
     elif norm_method == "minmax":
-        dmin_stat = raw_tiles.min(axis=(0, 2, 3), keepdims=True)
-        dmax_stat = raw_tiles.max(axis=(0, 2, 3), keepdims=True)
-        drange = dmax_stat - dmin_stat
-        drange[drange == 0] = 1
-        data_norm_tiles = (raw_tiles - dmin_stat) / drange
-        dmin_stat = dmin_stat.squeeze()
-        dmax_stat = dmax_stat.squeeze()
+        chunk_size = 1000
+        ch_min = np.full(img_channels, np.inf, dtype=np.float32)
+        ch_max = np.full(img_channels, -np.inf, dtype=np.float32)
+        for i in range(0, n_cells, chunk_size):
+            chunk = np.array(raw_tiles[i:min(i + chunk_size, n_cells)], dtype=np.float32)
+            ch_min = np.minimum(ch_min, chunk.min(axis=(0, 2, 3)))
+            ch_max = np.maximum(ch_max, chunk.max(axis=(0, 2, 3)))
+        dmin_stat = ch_min
+        dmax_stat = ch_max
     else:
-        data_norm_tiles = raw_tiles.copy()
+        pass  # no normalization
+    # raw_tiles stays as mmap; normalization applied per-batch in training loop
     data_norm = None
 else:
     if norm_method == "zscore":
@@ -522,11 +572,20 @@ logger.info("Pre-training (unsupervised): %d epochs", pretrain_epochs)
 device = detect_device()
 
 if use_tiles:
-    data_tensor = torch.tensor(data_norm_tiles, dtype=torch.float32)
+    # Don't load all tiles into a tensor -- use a Dataset that reads from mmap
+    # and normalizes per-batch
+    data_tensor = None  # handled by TileDataset below
 else:
     data_tensor = torch.tensor(data_norm, dtype=torch.float32)
 
 label_tensor = torch.tensor(label_array, dtype=torch.long)
+
+# Build dataset
+if use_tiles:
+    full_dataset = TileMmapDataset(raw_tiles, label_array, norm_method,
+                                    mean_stat, std_stat, dmin_stat, dmax_stat)
+else:
+    full_dataset = TensorDataset(data_tensor, label_tensor)
 
 if val_split > 0 and n_cells > 20:
     from sklearn.model_selection import train_test_split
@@ -539,17 +598,19 @@ if val_split > 0 and n_cells > 20:
     except ValueError:
         train_idx, val_idx = train_test_split(
             indices, test_size=val_split, random_state=42)
-    train_dataset = Subset(TensorDataset(data_tensor, label_tensor), train_idx)
-    val_dataset = Subset(TensorDataset(data_tensor, label_tensor), val_idx)
+    train_dataset = Subset(full_dataset, train_idx)
+    val_dataset = Subset(full_dataset, val_idx)
     n_val = len(val_idx)
     logger.info("Train/val split: %d/%d (%.0f%% validation)", len(train_idx), n_val, val_split * 100)
 else:
-    train_dataset = TensorDataset(data_tensor, label_tensor)
+    train_dataset = full_dataset
     val_dataset = None
     n_val = 0
 
-train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True, drop_last=False)
-val_loader = DataLoader(val_dataset, batch_size=bs, shuffle=False) if val_dataset else None
+train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True, drop_last=False,
+                           num_workers=0, pin_memory=(device == "cuda"))
+val_loader = DataLoader(val_dataset, batch_size=bs, shuffle=False,
+                         num_workers=0) if val_dataset else None
 
 # 5. Build model and optimizer
 if use_tiles:
@@ -732,16 +793,28 @@ task.update("Encoding all cells...", current=epochs + 1, maximum=epochs + 2)
 model.eval()
 
 with torch.no_grad():
-    all_data = data_tensor.to(device)
-    mu_all, _ = model.encode(all_data)
-    latent = mu_all.cpu().numpy()
+    # Encode in batches to handle large datasets
+    encode_loader = DataLoader(full_dataset, batch_size=bs * 2, shuffle=False, num_workers=0)
+    all_mu = []
+    all_logits = []
+
+    for batch_data_enc, _ in encode_loader:
+        batch_data_enc = batch_data_enc.to(device)
+        mu_batch, _ = model.encode(batch_data_enc)
+        all_mu.append(mu_batch.cpu())
+        if has_labels and model.classifier is not None:
+            logits_batch = model.classify(mu_batch)
+            all_logits.append(logits_batch.cpu())
+
+    mu_all = torch.cat(all_mu, dim=0)
+    latent = mu_all.numpy()
 
     pred_labels = np.full(n_cells, -1, dtype=np.int32)
     pred_conf = np.zeros(n_cells, dtype=np.float32)
 
-    if has_labels and model.classifier is not None:
-        logits = model.classify(mu_all)
-        probs = F.softmax(logits, dim=1).cpu().numpy()
+    if has_labels and model.classifier is not None and all_logits:
+        logits_all = torch.cat(all_logits, dim=0)
+        probs = F.softmax(logits_all, dim=1).numpy()
         pred_labels = probs.argmax(axis=1).astype(np.int32)
         pred_conf = probs.max(axis=1).astype(np.float32)
 
@@ -754,7 +827,8 @@ with torch.no_grad():
 
     # Per-feature reconstruction quality (measurement mode only)
     if not use_tiles:
-        recon_mu_all, _ = model.decode(mu_all)
+        all_data = data_tensor.to(device)
+        recon_mu_all, _ = model.decode(mu_all.to(device))
         r2 = compute_r_squared(all_data, recon_mu_all)
         mean_r2 = float(r2.mean())
         logger.info("Reconstruction R-squared: mean=%.3f, min=%.3f, max=%.3f",

@@ -134,9 +134,9 @@ if use_tiles:
     ckpt_channels = checkpoint['n_channels']
     ckpt_tile_size = checkpoint['tile_size']
     n_cells_tile = int(n_cells)
-    # Load tiles from temp file (little-endian float32)
-    raw_data = np.fromfile(tile_file_path, dtype='<f4').reshape(
-        n_cells_tile, ckpt_channels, ckpt_tile_size, ckpt_tile_size)
+    # Memory-map tiles from temp file (avoids loading all into RAM)
+    raw_data = np.memmap(tile_file_path, dtype='<f4', mode='r',
+                         shape=(n_cells_tile, ckpt_channels, ckpt_tile_size, ckpt_tile_size))
     n_cells = raw_data.shape[0]
     logger.info("Tile inference: %d cells, %d channels (loaded from file)",
                 n_cells, ckpt_channels)
@@ -188,16 +188,27 @@ model.load_state_dict(checkpoint['state_dict'])
 model.eval()
 
 with torch.no_grad():
-    data_tensor = torch.tensor(data_norm, dtype=torch.float32).to(device)
-    mu, _ = model.encode(data_tensor)
-    latent = mu.cpu().numpy()
+    # Encode in batches for memory efficiency
+    encode_bs = 512
+    all_mu = []
+    all_logits = []
+    for i in range(0, n_cells, encode_bs):
+        end = min(i + encode_bs, n_cells)
+        batch = torch.tensor(np.array(data_norm[i:end]), dtype=torch.float32).to(device)
+        mu_b, _ = model.encode(batch)
+        all_mu.append(mu_b.cpu())
+        if n_classes > 0 and model.classifier is not None:
+            all_logits.append(model.classify(mu_b).cpu())
+
+    mu_all = torch.cat(all_mu, dim=0)
+    latent = mu_all.numpy()
 
     pred_labels = np.full(n_cells, -1, dtype=np.int32)
     pred_conf = np.zeros(n_cells, dtype=np.float32)
 
-    if n_classes > 0 and model.classifier is not None:
-        logits = model.classify(mu)
-        probs = F.softmax(logits, dim=1).cpu().numpy()
+    if n_classes > 0 and model.classifier is not None and all_logits:
+        logits_all = torch.cat(all_logits, dim=0)
+        probs = F.softmax(logits_all, dim=1).numpy()
         pred_labels = probs.argmax(axis=1).astype(np.int32)
         pred_conf = probs.max(axis=1).astype(np.float32)
 

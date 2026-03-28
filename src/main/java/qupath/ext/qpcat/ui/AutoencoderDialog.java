@@ -735,8 +735,11 @@ public class AutoencoderDialog {
     }
 
     private void runTraining() {
-        if (qupath.getImageData() == null) {
-            Dialogs.showWarningNotification("QP-CAT", "No image is open.");
+        // Check that at least one image source is available
+        boolean hasCheckedImages = imageCheckProps.stream().anyMatch(SimpleBooleanProperty::get);
+        if (!hasCheckedImages && qupath.getImageData() == null) {
+            Dialogs.showWarningNotification("QP-CAT",
+                    "Select at least one image or open an image.");
             return;
         }
 
