@@ -1810,42 +1810,55 @@ public class ClusteringWorkflow {
             extraction = extractor.extractMultiImage(groups, selectedMeasurements);
         }
 
-        // For tile mode, read tiles from each image and concatenate
-        float[] tileData = null;
+        // For tile mode, write tiles to a temp file that Python memory-maps.
+        // This scales to any dataset size without holding all tiles in Java memory.
+        Path tileTempFile = null;
         int nChannels = 0;
         if (useTiles) {
-            List<float[]> tileChunks = new ArrayList<>();
+            // Determine channel count from first image
             for (ImageData<BufferedImage> imageData : imageDatas) {
-                ImageServer<BufferedImage> server = imageData.getServer();
-                if (nChannels == 0) {
-                    nChannels = server.nChannels();
-                    if (includeCellMask) nChannels++;
-                }
-                List<PathObject> dets = new ArrayList<>(
-                        imageData.getHierarchy().getDetectionObjects());
-                if (cellsOnly) dets.removeIf(d -> !d.isCell());
-                if (dets.isEmpty()) continue;
+                nChannels = imageData.getServer().nChannels();
+                if (includeCellMask) nChannels++;
+                break;
+            }
 
-                report(progressCallback, "Reading tiles from "
-                        + imageData.getServer().getMetadata().getName() + "...");
-                float[] chunk = readMultiChannelTilesAroundCentroids(
-                        server, dets, tileSize, includeCellMask, progressCallback);
-                tileChunks.add(chunk);
+            tileTempFile = Files.createTempFile("qpcat_tiles_", ".bin");
+            tileTempFile.toFile().deleteOnExit();
+            long totalFloats = 0;
+
+            try (var raf = new java.io.RandomAccessFile(tileTempFile.toFile(), "rw")) {
+                for (ImageData<BufferedImage> imageData : imageDatas) {
+                    ImageServer<BufferedImage> server = imageData.getServer();
+                    List<PathObject> dets = new ArrayList<>(
+                            imageData.getHierarchy().getDetectionObjects());
+                    if (cellsOnly) dets.removeIf(d -> !d.isCell());
+                    if (dets.isEmpty()) continue;
+
+                    report(progressCallback, "Writing tiles from "
+                            + server.getMetadata().getName()
+                            + " (" + dets.size() + " cells)...");
+
+                    // Process in batches of 500 to limit per-batch memory
+                    int tileBatchSize = 500;
+                    for (int batchStart = 0; batchStart < dets.size(); batchStart += tileBatchSize) {
+                        int batchEnd = Math.min(batchStart + tileBatchSize, dets.size());
+                        List<PathObject> batch = dets.subList(batchStart, batchEnd);
+                        float[] batchTiles = readMultiChannelTilesAroundCentroids(
+                                server, batch, tileSize, includeCellMask, null);
+
+                        // Write floats as little-endian bytes (numpy float32 format)
+                        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(batchTiles.length * 4);
+                        bb.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                        bb.asFloatBuffer().put(batchTiles);
+                        raf.write(bb.array());
+                        totalFloats += batchTiles.length;
+                    }
+                }
             }
-            // Concatenate all chunks
-            long totalLenLong = tileChunks.stream().mapToLong(c -> c.length).sum();
-            if (totalLenLong > Integer.MAX_VALUE) {
-                throw new IOException("Combined tile data exceeds max array size ("
-                        + totalLenLong + " floats across " + imageDatas.size()
-                        + " images). Reduce tile size, deselect images, or use measurement mode.");
-            }
-            int totalLen = (int) totalLenLong;
-            tileData = new float[totalLen];
-            int offset = 0;
-            for (float[] chunk : tileChunks) {
-                System.arraycopy(chunk, 0, tileData, offset, chunk.length);
-                offset += chunk.length;
-            }
+
+            long expectedFloats = (long) allDetections.size() * nChannels * tileSize * tileSize;
+            logger.info("Tile data written to temp file: expected {} floats ({} MB)",
+                    expectedFloats, expectedFloats * 4 / (1024 * 1024));
         }
 
         int nCells = allDetections.size();
@@ -1854,7 +1867,7 @@ public class ClusteringWorkflow {
 
         Map<String, Object> resultMap = new HashMap<>();
         final MeasurementExtractor.ExtractionResult finalExtraction = extraction;
-        final float[] finalTileData = tileData;
+        final Path finalTileTempFile = tileTempFile;
         final int finalNChannels = nChannels;
         try {
             ApposeClusteringService.withExtensionClassLoader(() -> {
@@ -1885,12 +1898,9 @@ public class ClusteringWorkflow {
                     inputs.put("measurements", measurementsNd);
                     inputs.put("marker_names", List.of(finalExtraction.getMeasurementNames()));
                 } else {
-                    // Tile mode: pass NCHW float32 data
-                    NDArray.Shape shape = new NDArray.Shape(
-                            NDArray.Shape.Order.C_ORDER, nCells, finalNChannels, tileSize, tileSize);
-                    NDArray tilesNd = new NDArray(NDArray.DType.FLOAT32, shape);
-                    tilesNd.buffer().asFloatBuffer().put(finalTileData);
-                    inputs.put("tile_images", tilesNd);
+                    // Tile mode: pass file path for Python to memory-map
+                    inputs.put("tile_file_path", finalTileTempFile.toAbsolutePath().toString());
+                    inputs.put("n_cells", nCells);
                     inputs.put("n_channels", finalNChannels);
                     inputs.put("tile_size", tileSize);
                 }
@@ -2088,14 +2098,28 @@ public class ClusteringWorkflow {
 
             // Prepare input data based on mode
             MeasurementExtractor.ExtractionResult extraction = null;
-            float[] tileBuf = null;
+            Path inferTileFile = null;
             int nChannels = 0;
             if (useTiles) {
                 ImageServer<BufferedImage> server = imageData.getServer();
                 nChannels = server.nChannels();
-                tileBuf = readMultiChannelTilesAroundCentroids(
-                        server, detections, tileSize, includeCellMask, null);
                 if (includeCellMask) nChannels++;
+
+                // Write tiles to temp file in batches (same pattern as training)
+                inferTileFile = Files.createTempFile("qpcat_infer_tiles_", ".bin");
+                inferTileFile.toFile().deleteOnExit();
+                try (var raf = new java.io.RandomAccessFile(inferTileFile.toFile(), "rw")) {
+                    int batchSz = 500;
+                    for (int bs = 0; bs < detections.size(); bs += batchSz) {
+                        int be = Math.min(bs + batchSz, detections.size());
+                        float[] batch = readMultiChannelTilesAroundCentroids(
+                                server, detections.subList(bs, be), tileSize, includeCellMask, null);
+                        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(batch.length * 4);
+                        bb.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                        bb.asFloatBuffer().put(batch);
+                        raf.write(bb.array());
+                    }
+                }
             } else {
                 MeasurementExtractor extractor = new MeasurementExtractor();
                 try {
@@ -2107,7 +2131,7 @@ public class ClusteringWorkflow {
             }
 
             final MeasurementExtractor.ExtractionResult finalExtraction = extraction;
-            final float[] finalTileBuf = tileBuf;
+            final Path finalInferTileFile = inferTileFile;
             final int finalNChannels = nChannels;
 
             try {
@@ -2117,11 +2141,11 @@ public class ClusteringWorkflow {
                     inputs.put("model_state_base64", modelStateBase64);
 
                     if (useTiles) {
-                        NDArray.Shape shape = new NDArray.Shape(
-                                NDArray.Shape.Order.C_ORDER, nCells, finalNChannels, tileSize, tileSize);
-                        NDArray tilesNd = new NDArray(NDArray.DType.FLOAT32, shape);
-                        tilesNd.buffer().asFloatBuffer().put(finalTileBuf);
-                        inputs.put("tile_images", tilesNd);
+                        inputs.put("tile_file_path",
+                                finalInferTileFile.toAbsolutePath().toString());
+                        inputs.put("n_cells", nCells);
+                        inputs.put("n_channels", finalNChannels);
+                        inputs.put("tile_size", tileSize);
                     } else {
                         int nMeasurements = finalExtraction.getNMeasurements();
                         NDArray.Shape shape = new NDArray.Shape(

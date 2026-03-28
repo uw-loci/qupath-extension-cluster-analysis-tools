@@ -131,11 +131,15 @@ use_tiles = (ckpt_mode == 'tiles')
 task.update("Normalizing and encoding...", current=1, maximum=3)
 
 if use_tiles:
-    raw_data = tile_images.ndarray().copy().astype(np.float32)
-    n_cells = raw_data.shape[0]
     ckpt_channels = checkpoint['n_channels']
     ckpt_tile_size = checkpoint['tile_size']
-    logger.info("Tile inference: %d cells, %d channels", n_cells, ckpt_channels)
+    n_cells_tile = int(n_cells)
+    # Load tiles from temp file (little-endian float32)
+    raw_data = np.fromfile(tile_file_path, dtype='<f4').reshape(
+        n_cells_tile, ckpt_channels, ckpt_tile_size, ckpt_tile_size)
+    n_cells = raw_data.shape[0]
+    logger.info("Tile inference: %d cells, %d channels (loaded from file)",
+                n_cells, ckpt_channels)
 
     if norm_method == "zscore" and norm_params.get('mean') is not None:
         mean = np.array(norm_params['mean'], dtype=np.float32).reshape(1, -1, 1, 1)

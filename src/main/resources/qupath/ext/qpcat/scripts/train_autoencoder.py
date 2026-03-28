@@ -369,11 +369,15 @@ except NameError:
 use_tiles = (mode == "tiles")
 
 if use_tiles:
-    raw_tiles = tile_images.ndarray().copy().astype(np.float32)
-    n_cells = raw_tiles.shape[0]
     img_channels = int(n_channels)
     img_tile_size = int(tile_size)
-    logger.info("Tile mode: %d cells, %d channels, %dx%d tiles",
+    n_cells_tile = int(n_cells)
+    # Load tiles from temp file (little-endian float32, written by Java)
+    tile_path = tile_file_path
+    raw_tiles = np.fromfile(tile_path, dtype='<f4').reshape(
+        n_cells_tile, img_channels, img_tile_size, img_tile_size)
+    n_cells = raw_tiles.shape[0]
+    logger.info("Tile mode: %d cells, %d channels, %dx%d tiles (loaded from file)",
                 n_cells, img_channels, img_tile_size, img_tile_size)
     data = None
     n_markers = 0
