@@ -516,6 +516,10 @@ public class AutoencoderDialog {
 
     // ==================== Class Distribution Chart ====================
 
+    /**
+     * Scans all checked images for class distribution. Runs image loading
+     * on a background thread to avoid blocking the FX thread.
+     */
     private void refreshClassDistribution() {
         if (classDistributionChart == null || labelSummaryLabel == null) return;
 
@@ -524,108 +528,136 @@ public class AutoencoderDialog {
         boolean usePoints = labelPointsCheck != null && labelPointsCheck.isSelected();
         boolean useDetections = labelDetectionsCheck != null && labelDetectionsCheck.isSelected();
 
-        Map<String, Integer> classCounts = new LinkedHashMap<>();
-        Map<String, Integer> classColors = new LinkedHashMap<>();
-        int totalCells = 0;
-        int totalLabeled = 0;
-
-        // Count checked images for the summary
-        int nCheckedImages = 0;
-        for (var prop : imageCheckProps) {
-            if (prop.get()) nCheckedImages++;
+        // Build list of checked entries
+        List<ProjectImageEntry<BufferedImage>> checkedEntries = new ArrayList<>();
+        for (int i = 0; i < projectEntries.size(); i++) {
+            if (i < imageCheckProps.size() && imageCheckProps.get(i).get()) {
+                checkedEntries.add(projectEntries.get(i));
+            }
         }
-        if (projectEntries.isEmpty()) nCheckedImages = 1; // current image only
 
-        // Scan the currently open image for live preview.
-        // Other checked images will be loaded at training time.
-        // Reading non-current images from disk here would block the UI thread.
-        ImageData<BufferedImage> currentImageData = qupath.getImageData();
-        if (currentImageData == null) {
-            labelSummaryLabel.setText("No image open.");
+        if (checkedEntries.isEmpty() && qupath.getImageData() == null) {
+            labelSummaryLabel.setText("No images selected.");
             classDistributionChart.setVisible(false);
             classDistributionChart.setManaged(false);
             return;
         }
 
-        var hierarchy = currentImageData.getHierarchy();
-        List<PathObject> dets = new ArrayList<>(hierarchy.getDetectionObjects());
-        if (cellsOnly) dets.removeIf(d -> !d.isCell());
-        totalCells = dets.size();
+        labelSummaryLabel.setText("Scanning " + checkedEntries.size() + " image(s)...");
 
-        // Assign one label per detection using same priority as extractClassLabels:
-        // locked annotations first, then points, then detection class (overrides)
-        Map<PathObject, String> assigned = new HashMap<>();
-        Map<PathObject, Integer> assignedColor = new HashMap<>();
+        // Run image scanning on background thread
+        Thread scanThread = new Thread(() -> {
+            Map<String, Integer> classCounts = new LinkedHashMap<>();
+            Map<String, Integer> classColors = new LinkedHashMap<>();
+            int totalCells = 0;
+            int totalLabeled = 0;
+            int nImages = 0;
 
-        if (useLocked) {
-            for (PathObject annotation : hierarchy.getAnnotationObjects()) {
-                if (!annotation.isLocked()) continue;
-                PathClass pc = annotation.getPathClass();
-                if (pc == null || pc == PathClass.getNullClass()) continue;
-                String className = pc.toString();
-                if (className.startsWith("Cluster ")) continue;
-                for (PathObject det : hierarchy.getAllDetectionsForROI(annotation.getROI())) {
-                    if (cellsOnly && !det.isCell()) continue;
-                    if (!assigned.containsKey(det)) {
-                        assigned.put(det, className);
-                        assignedColor.put(det, pc.getColor());
+            // Determine which images to scan
+            List<ImageData<BufferedImage>> imagesToScan = new ArrayList<>();
+            if (!checkedEntries.isEmpty()) {
+                for (ProjectImageEntry<BufferedImage> entry : checkedEntries) {
+                    try {
+                        var currentData = qupath.getImageData();
+                        var currentEntry = (qupath.getProject() != null && currentData != null)
+                                ? qupath.getProject().getEntry(currentData) : null;
+                        if (currentEntry != null && currentEntry.equals(entry)) {
+                            imagesToScan.add(currentData);
+                        } else {
+                            imagesToScan.add(entry.readImageData());
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Could not read {}: {}", entry.getImageName(), e.getMessage());
                     }
                 }
+            } else if (qupath.getImageData() != null) {
+                imagesToScan.add(qupath.getImageData());
             }
-        }
 
-        // Points: count points directly (nearest-neighbor matching only done at training time)
-        if (usePoints) {
-            for (PathObject annotation : hierarchy.getAnnotationObjects()) {
-                if (annotation.getROI() == null || !annotation.getROI().isPoint()) continue;
-                PathClass pc = annotation.getPathClass();
-                if (pc == null || pc == PathClass.getNullClass()) continue;
-                String className = pc.toString();
-                if (className.startsWith("Cluster ")) continue;
-                int nPoints = annotation.getROI().getNumPoints();
-                classCounts.merge(className, nPoints, Integer::sum);
-                classColors.putIfAbsent(className, pc.getColor());
-                totalLabeled += nPoints;
-            }
-        }
+            for (ImageData<BufferedImage> imageData : imagesToScan) {
+                var hierarchy = imageData.getHierarchy();
+                List<PathObject> dets = new ArrayList<>(hierarchy.getDetectionObjects());
+                if (cellsOnly) dets.removeIf(d -> !d.isCell());
+                totalCells += dets.size();
+                nImages++;
 
-        // Detection classes override locked annotation labels
-        if (useDetections) {
-            for (PathObject det : dets) {
-                PathClass pc = det.getPathClass();
-                String name;
-                Integer color;
-                if (pc == null || pc == PathClass.getNullClass()) {
-                    name = "Unclassified";
-                    color = 0x404040;
-                } else {
-                    name = pc.toString();
-                    if (name.startsWith("Cluster ")) continue;
-                    color = pc.getColor();
+                // Per-detection label assignment (same priority as extractClassLabels)
+                Map<PathObject, String> assigned = new HashMap<>();
+                Map<PathObject, Integer> assignedColorMap = new HashMap<>();
+
+                if (useLocked) {
+                    for (PathObject annotation : hierarchy.getAnnotationObjects()) {
+                        if (!annotation.isLocked()) continue;
+                        PathClass pc = annotation.getPathClass();
+                        if (pc == null || pc == PathClass.getNullClass()) continue;
+                        String className = pc.toString();
+                        if (className.startsWith("Cluster ")) continue;
+                        for (PathObject det : hierarchy.getAllDetectionsForROI(annotation.getROI())) {
+                            if (cellsOnly && !det.isCell()) continue;
+                            if (!assigned.containsKey(det)) {
+                                assigned.put(det, className);
+                                assignedColorMap.put(det, pc.getColor());
+                            }
+                        }
+                    }
                 }
-                // Detection class overrides other sources
-                assigned.put(det, name);
-                assignedColor.put(det, color);
+
+                if (usePoints) {
+                    for (PathObject annotation : hierarchy.getAnnotationObjects()) {
+                        if (annotation.getROI() == null || !annotation.getROI().isPoint()) continue;
+                        PathClass pc = annotation.getPathClass();
+                        if (pc == null || pc == PathClass.getNullClass()) continue;
+                        String className = pc.toString();
+                        if (className.startsWith("Cluster ")) continue;
+                        int nPoints = annotation.getROI().getNumPoints();
+                        classCounts.merge(className, nPoints, Integer::sum);
+                        classColors.putIfAbsent(className, pc.getColor());
+                        totalLabeled += nPoints;
+                    }
+                }
+
+                if (useDetections) {
+                    for (PathObject det : dets) {
+                        PathClass pc = det.getPathClass();
+                        String name;
+                        Integer color;
+                        if (pc == null || pc == PathClass.getNullClass()) {
+                            name = "Unclassified";
+                            color = 0x404040;
+                        } else {
+                            name = pc.toString();
+                            if (name.startsWith("Cluster ")) continue;
+                            color = pc.getColor();
+                        }
+                        assigned.put(det, name);
+                        assignedColorMap.put(det, color);
+                    }
+                }
+
+                for (var e : assigned.entrySet()) {
+                    if (!dets.contains(e.getKey())) continue;
+                    classCounts.merge(e.getValue(), 1, Integer::sum);
+                    classColors.putIfAbsent(e.getValue(), assignedColorMap.get(e.getKey()));
+                    totalLabeled++;
+                }
             }
-        }
 
-        // Count from assigned map (excludes point-based counts already added above)
-        for (var entry : assigned.entrySet()) {
-            if (!dets.contains(entry.getKey())) continue; // skip non-matching type
-            String name = entry.getValue();
-            classCounts.merge(name, 1, Integer::sum);
-            classColors.putIfAbsent(name, assignedColor.get(entry.getKey()));
-            totalLabeled++;
-        }
+            // Update UI on FX thread
+            final int fTotalCells = totalCells;
+            final int fTotalLabeled = totalLabeled;
+            final int fNImages = nImages;
+            Platform.runLater(() ->
+                    updateChartUI(classCounts, classColors, fTotalCells, fTotalLabeled, fNImages, cellsOnly));
+        }, "QPCAT-ClassDistScan");
+        scanThread.setDaemon(true);
+        scanThread.start();
+    }
 
-        // Update summary label
+    private void updateChartUI(Map<String, Integer> classCounts, Map<String, Integer> classColors,
+                                int totalCells, int totalLabeled, int nImages, boolean cellsOnly) {
         StringBuilder sb = new StringBuilder();
         sb.append(totalCells).append(" ").append(cellsOnly ? "cells" : "detections")
-          .append(" in current image");
-        if (nCheckedImages > 1) {
-            sb.append(" (").append(nCheckedImages).append(" images selected for training)");
-        }
-        sb.append(". ");
+          .append(" across ").append(nImages).append(" image(s). ");
         if (classCounts.isEmpty()) {
             sb.append("No labeled cells found.");
         } else {
