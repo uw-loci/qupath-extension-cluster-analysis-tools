@@ -1186,7 +1186,15 @@ public class ClusteringWorkflow {
         int imageChannels = server.nChannels();
         int totalChannels = imageChannels + (includeMask ? 1 : 0);
         int halfTile = tileSize / 2;
-        float[] tileData = new float[nCells * totalChannels * tileSize * tileSize];
+        long tileArraySize = (long) nCells * totalChannels * tileSize * tileSize;
+        if (tileArraySize > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "Tile data too large: " + nCells + " cells * " + totalChannels
+                    + " channels * " + tileSize + "x" + tileSize
+                    + " = " + tileArraySize + " floats (max " + Integer.MAX_VALUE
+                    + "). Reduce tile size, number of cells, or use measurement mode.");
+        }
+        float[] tileData = new float[(int) tileArraySize];
 
         for (int i = 0; i < nCells; i++) {
             PathObject det = detections.get(i);
@@ -1825,7 +1833,13 @@ public class ClusteringWorkflow {
                 tileChunks.add(chunk);
             }
             // Concatenate all chunks
-            int totalLen = tileChunks.stream().mapToInt(c -> c.length).sum();
+            long totalLenLong = tileChunks.stream().mapToLong(c -> c.length).sum();
+            if (totalLenLong > Integer.MAX_VALUE) {
+                throw new IOException("Combined tile data exceeds max array size ("
+                        + totalLenLong + " floats across " + imageDatas.size()
+                        + " images). Reduce tile size, deselect images, or use measurement mode.");
+            }
+            int totalLen = (int) totalLenLong;
             tileData = new float[totalLen];
             int offset = 0;
             for (float[] chunk : tileChunks) {
