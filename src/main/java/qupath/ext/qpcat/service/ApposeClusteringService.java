@@ -160,10 +160,20 @@ public class ApposeClusteringService {
                 pythonService = environment.python();
 
                 pythonService.debug(msg -> {
-                    logger.info("[QPCAT Python] {}", msg);
+                    // Filter out Appose protocol messages (EXECUTE requests contain
+                    // the full script + base64 inputs and can be 25+ MB). Only log
+                    // Python stderr output (logging, warnings, errors).
+                    if (msg.contains("\"requestType\"") || msg.contains("\"responseType\"")) {
+                        // Protocol message -- skip logging (too large, not useful)
+                        return;
+                    }
+                    // Truncate very long messages (safety net)
+                    String logMsg = msg.length() > 2000
+                            ? msg.substring(0, 2000) + "... [truncated]" : msg;
+                    logger.info("[QPCAT Python] {}", logMsg);
                     Consumer<String> listener = debugListener;
                     if (listener != null) {
-                        listener.accept(msg);
+                        listener.accept(logMsg);
                     }
                 });
 

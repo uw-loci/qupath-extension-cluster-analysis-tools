@@ -2209,7 +2209,11 @@ public class ClusteringWorkflow {
      * @param progressCallback optional progress callback
      * @throws IOException if application fails
      */
-    public void applyAutoencoderToProject(
+    /**
+     * @return true if the currently open image was among those applied to
+     *         (caller should prompt user to reload)
+     */
+    public boolean applyAutoencoderToProject(
             List<ProjectImageEntry<BufferedImage>> imageEntries,
             List<String> measurements,
             String modelStateBase64,
@@ -2219,6 +2223,7 @@ public class ClusteringWorkflow {
             Consumer<String> progressCallback) throws IOException {
 
         long startTime = System.currentTimeMillis();
+        boolean currentImageApplied = false;
         int totalApplied = 0;
 
         for (int idx = 0; idx < imageEntries.size(); idx++) {
@@ -2226,21 +2231,17 @@ public class ClusteringWorkflow {
             report(progressCallback, "Processing image " + (idx + 1) + "/"
                     + imageEntries.size() + ": " + entry.getImageName());
 
-            // Use in-memory ImageData for the currently-open image to ensure
-            // modifications are visible in the QuPath viewer and not overwritten
-            // when the user saves via QuPath's normal save mechanism.
+            // Always read from qpdata file (not live in-memory data).
+            // This ensures we modify and save the persistent version.
+            // If the current image is affected, we'll prompt the user to reload.
             ImageData<BufferedImage> imageData;
             boolean isCurrentImage = false;
             try {
                 var currentData = qupath.getImageData();
                 var currentEntry = (qupath.getProject() != null && currentData != null)
                         ? qupath.getProject().getEntry(currentData) : null;
-                if (currentEntry != null && currentEntry.equals(entry)) {
-                    imageData = currentData;
-                    isCurrentImage = true;
-                } else {
-                    imageData = entry.readImageData();
-                }
+                isCurrentImage = (currentEntry != null && currentEntry.equals(entry));
+                imageData = entry.readImageData();
             } catch (Exception e) {
                 logger.warn("Failed to read {}: {}", entry.getImageName(), e.getMessage());
                 continue;
@@ -2406,34 +2407,20 @@ public class ClusteringWorkflow {
                 continue;
             }
 
-            // Save results: for current image, modifications are already in the live
-            // hierarchy (viewer updates immediately). For other images, save to disk.
-            if (isCurrentImage) {
+            // Always save to qpdata file (consistent for all images)
+            try {
+                entry.saveImageData(imageData);
                 totalApplied++;
-                logger.info("Applied autoencoder to current image {} ({} detections, in-memory)",
+                if (isCurrentImage) currentImageApplied = true;
+                logger.info("Saved autoencoder results for {} ({} detections)",
                         entry.getImageName(), detections.size());
-            } else {
-                try {
-                    entry.saveImageData(imageData);
-                    totalApplied++;
-                    logger.info("Saved autoencoder results for {} ({} detections)",
-                            entry.getImageName(), detections.size());
-                } catch (Exception e) {
-                    logger.error("Failed to save {}: {}", entry.getImageName(), e.getMessage());
-                }
+            } catch (Exception e) {
+                logger.error("Failed to save {}: {}", entry.getImageName(), e.getMessage());
             }
 
             // Clean up per-image tile temp file
             if (useTiles) deleteTempFile(inferTileFile);
         }
-
-        // Fire hierarchy update for currently open image
-        Platform.runLater(() -> {
-            ImageData<BufferedImage> current = qupath.getImageData();
-            if (current != null) {
-                current.getHierarchy().fireHierarchyChangedEvent(this);
-            }
-        });
 
         long elapsed = System.currentTimeMillis() - startTime;
         String msg = "[TEST] Autoencoder applied to " + totalApplied + "/"
@@ -2443,6 +2430,8 @@ public class ClusteringWorkflow {
                 Map.of("Images", String.valueOf(imageEntries.size()),
                        "Applied", String.valueOf(totalApplied)),
                 msg, elapsed);
+
+        return currentImageApplied;
     }
 
     /** Converts int[] to List<Integer> for Appose JSON serialization. */

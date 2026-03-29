@@ -546,7 +546,20 @@ public class AutoencoderDialog {
         HBox applyRow = new HBox(10, evaluateButton, applyProjectButton);
         applyRow.setAlignment(Pos.CENTER_RIGHT);
 
-        VBox box = new VBox(5, trainRow, applyRow);
+        Label evalHint = new Label(
+                "Evaluate: runs inference on checked images and shows accuracy vs existing labels. "
+                + "Read-only -- does NOT change any classifications.");
+        evalHint.setWrapText(true);
+        evalHint.setStyle("-fx-font-size: 10px; -fx-text-fill: #666;");
+
+        Label applyHint = new Label(
+                "Apply: classifies all cells in checked images and saves to their qpdata files. "
+                + "DESTRUCTIVE -- replaces existing classifications. If the current image is "
+                + "affected, you will be prompted to reload it.");
+        applyHint.setWrapText(true);
+        applyHint.setStyle("-fx-font-size: 10px; -fx-text-fill: #666;");
+
+        VBox box = new VBox(5, trainRow, applyRow, evalHint, applyHint);
         box.setPadding(new Insets(10, 0, 5, 0));
         return box;
     }
@@ -928,7 +941,7 @@ public class AutoencoderDialog {
         Thread thread = new Thread(() -> {
             try {
                 ClusteringWorkflow workflow = new ClusteringWorkflow(qupath);
-                workflow.applyAutoencoderToProject(
+                boolean currentImageChanged = workflow.applyAutoencoderToProject(
                         entries, trainedMeasurements, trainedModelState,
                         trainedClassNames, trainedInputMode, trainedTileSize,
                         trainedIncludeMask, trainedCellsOnly, progress);
@@ -940,8 +953,30 @@ public class AutoencoderDialog {
                     applyProjectButton.setDisable(false);
                     saveModelButton.setDisable(false);
                     evaluateButton.setDisable(false);
-                    Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
-                            "Classifier applied to " + entries.size() + " image(s).");
+
+                    if (currentImageChanged && qupath.getImageData() != null) {
+                        // Current image was modified on disk but the viewer shows
+                        // stale in-memory data. Offer to reload (same pattern as
+                        // QuPath's "Run for project" in the script editor).
+                        boolean reload = Dialogs.showConfirmDialog(
+                                TEST_BADGE + "Reload Current Image?",
+                                "The currently open image was classified and saved.\n"
+                                + "The viewer is showing the old (pre-classification) data.\n\n"
+                                + "Reload the image to see the updated classifications?");
+                        if (reload) {
+                            try {
+                                var entry = qupath.getProject().getEntry(qupath.getImageData());
+                                if (entry != null) {
+                                    qupath.openImageEntry(entry);
+                                }
+                            } catch (Exception ex) {
+                                logger.warn("Failed to reload: {}", ex.getMessage());
+                            }
+                        }
+                    } else {
+                        Dialogs.showInfoNotification(TEST_BADGE + "QP-CAT",
+                                "Classifier applied to " + entries.size() + " image(s).");
+                    }
                 });
             } catch (Exception e) {
                 logger.error("Application failed", e);
