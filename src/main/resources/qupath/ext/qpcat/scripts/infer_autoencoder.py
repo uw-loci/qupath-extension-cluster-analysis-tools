@@ -138,22 +138,26 @@ if use_tiles:
     raw_data = np.memmap(tile_file_path, dtype='<f4', mode='r',
                          shape=(n_cells_tile, ckpt_channels, ckpt_tile_size, ckpt_tile_size))
     n_cells = raw_data.shape[0]
-    logger.info("Tile inference: %d cells, %d channels (loaded from file)",
-                n_cells, ckpt_channels)
+    tile_size_mb = raw_data.nbytes / (1024 * 1024)
+    logger.info("Tile inference: %d cells, %d channels (%.0f MB, memory-mapped)",
+                n_cells, ckpt_channels, tile_size_mb)
 
+    # Prepare normalization tensors for per-batch normalization (no full-array copy)
+    tile_norm_mean = None
+    tile_norm_std = None
+    tile_norm_min = None
+    tile_norm_range = None
     if norm_method == "zscore" and norm_params.get('mean') is not None:
-        mean = np.array(norm_params['mean'], dtype=np.float32).reshape(1, -1, 1, 1)
-        std = np.array(norm_params['std'], dtype=np.float32).reshape(1, -1, 1, 1)
-        std[std == 0] = 1
-        data_norm = (raw_data - mean) / std
+        tile_norm_mean = torch.tensor(norm_params['mean'], dtype=torch.float32).view(1, -1, 1, 1)
+        tile_norm_std = torch.tensor(norm_params['std'], dtype=torch.float32).view(1, -1, 1, 1)
+        tile_norm_std[tile_norm_std == 0] = 1
     elif norm_method == "minmax" and norm_params.get('min') is not None:
-        dmin = np.array(norm_params['min'], dtype=np.float32).reshape(1, -1, 1, 1)
-        dmax = np.array(norm_params['max'], dtype=np.float32).reshape(1, -1, 1, 1)
-        drange = dmax - dmin
-        drange[drange == 0] = 1
-        data_norm = (raw_data - dmin) / drange
-    else:
-        data_norm = raw_data.copy()
+        tile_norm_min = torch.tensor(norm_params['min'], dtype=torch.float32).view(1, -1, 1, 1)
+        dmax_t = torch.tensor(norm_params['max'], dtype=torch.float32).view(1, -1, 1, 1)
+        tile_norm_range = dmax_t - tile_norm_min
+        tile_norm_range[tile_norm_range == 0] = 1
+
+    data_norm = None  # tiles normalized per-batch in encode loop
 else:
     raw_data = measurements.ndarray().copy().astype(np.float32)
     n_cells, n_markers = raw_data.shape
@@ -194,11 +198,24 @@ with torch.no_grad():
     all_logits = []
     for i in range(0, n_cells, encode_bs):
         end = min(i + encode_bs, n_cells)
-        batch = torch.tensor(np.array(data_norm[i:end]), dtype=torch.float32).to(device)
+        if use_tiles:
+            # Read batch from memmap and normalize on the fly
+            batch = torch.tensor(np.array(raw_data[i:end]), dtype=torch.float32)
+            if tile_norm_mean is not None:
+                batch = (batch - tile_norm_mean) / tile_norm_std
+            elif tile_norm_min is not None:
+                batch = (batch - tile_norm_min) / tile_norm_range
+            batch = batch.to(device)
+        else:
+            batch = torch.tensor(np.array(data_norm[i:end]), dtype=torch.float32).to(device)
         mu_b, _ = model.encode(batch)
         all_mu.append(mu_b.cpu())
         if n_classes > 0 and model.classifier is not None:
             all_logits.append(model.classify(mu_b).cpu())
+
+        if (i + encode_bs) % 5000 < encode_bs:
+            task.update("Encoding cells %d/%d..." % (min(i + encode_bs, n_cells), n_cells),
+                        current=1, maximum=3)
 
     mu_all = torch.cat(all_mu, dim=0)
     latent = mu_all.numpy()

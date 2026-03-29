@@ -2193,8 +2193,8 @@ public class ClusteringWorkflow {
         result.put("class_names", classNames);
 
         double accuracy = totalLabeled > 0 ? (double) totalCorrect / totalLabeled * 100 : 0;
-        logger.info("[TEST] Evaluation: %.1f%% accuracy (%d/%d labeled cells across %d images)",
-                accuracy, totalCorrect, totalLabeled, imageEntries.size());
+        logger.info("[TEST] Evaluation: {}/{} correct ({} labeled cells across {} images)",
+                totalCorrect, totalLabeled, totalLabeled, imageEntries.size());
 
         return result;
     }
