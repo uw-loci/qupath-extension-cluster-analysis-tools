@@ -839,6 +839,20 @@ with torch.no_grad():
 
 logger.info("Encoding complete: %d cells x %d latent dims", n_cells, ldim)
 
+# 7b. Release tile memmap so Java can delete the temp file (Windows file locking)
+if use_tiles and raw_tiles is not None:
+    # Close the memmap file handle explicitly
+    if hasattr(raw_tiles, '_mmap') and raw_tiles._mmap is not None:
+        raw_tiles._mmap.close()
+    del raw_tiles
+    # Also release dataset/dataloader references
+    del full_dataset, train_loader
+    if val_loader is not None:
+        del val_loader
+    import gc
+    gc.collect()
+    logger.info("Tile memmap released for temp file cleanup")
+
 # 8. Save model checkpoint
 model_b64 = ""
 if save_path:

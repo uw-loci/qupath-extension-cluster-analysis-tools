@@ -2456,13 +2456,22 @@ public class ClusteringWorkflow {
         return tempDir;
     }
 
-    /** Deletes a temp file if it exists. Logs on failure rather than throwing. */
+    /** Deletes a temp file if it exists. Retries once after a delay for Windows file locking. */
     private static void deleteTempFile(Path file) {
-        if (file != null) {
+        if (file == null) return;
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            // Windows: Python memmap may still hold file handle briefly after task returns.
+            // Wait for GC/close to release, then retry.
+            logger.debug("Temp file locked, retrying after 500ms: {}", file);
             try {
+                Thread.sleep(500);
                 Files.deleteIfExists(file);
-            } catch (IOException e) {
-                logger.warn("Failed to delete temp file {}: {}", file, e.getMessage());
+            } catch (Exception e2) {
+                // Mark for deletion on JVM exit as last resort
+                file.toFile().deleteOnExit();
+                logger.warn("Temp file still locked, will delete on exit: {}", file);
             }
         }
     }

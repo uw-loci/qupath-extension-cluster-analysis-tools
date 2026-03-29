@@ -218,6 +218,16 @@ if n_classes > 0:
         count = int((pred_labels == i).sum())
         logger.info("  Predicted %s: %d cells", name, count)
 
+# Release tile memmap so Java can delete the temp file (Windows file locking)
+if use_tiles:
+    if hasattr(raw_data, '_mmap') and raw_data._mmap is not None:
+        raw_data._mmap.close()
+    del raw_data
+    if 'data_norm' in dir():
+        del data_norm
+    import gc
+    gc.collect()
+
 # 4. Package outputs
 task.update("Packaging results...", current=2, maximum=3)
 
