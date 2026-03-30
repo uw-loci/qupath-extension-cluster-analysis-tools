@@ -1,6 +1,9 @@
 package qupath.ext.qpcat.preferences;
 
 import javafx.beans.property.*;
+import javafx.collections.ObservableList;
+import qupath.fx.prefs.controlsfx.PropertyItemBuilder;
+import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.prefs.PathPrefs;
 
 /**
@@ -8,6 +11,9 @@ import qupath.lib.gui.prefs.PathPrefs;
  * All preferences are stored using QuPath's preference system and persist across sessions.
  */
 public final class QpcatPreferences {
+
+    private static final String CATEGORY_VAE = "QP-CAT: Autoencoder (Advanced)";
+    private static final String CATEGORY_GENERAL = "QP-CAT";
 
     private QpcatPreferences() {}
 
@@ -68,6 +74,47 @@ public final class QpcatPreferences {
 
     private static final BooleanProperty aeCellsOnly = PathPrefs.createPersistentPreference(
             "qpcat.ae.cellsOnly", false);
+
+    // ==================== Advanced VAE Training ====================
+
+    private static final DoubleProperty aeKlBetaMax = PathPrefs.createPersistentPreference(
+            "qpcat.ae.klBetaMax", 0.5);
+
+    private static final IntegerProperty aeKlCycles = PathPrefs.createPersistentPreference(
+            "qpcat.ae.klCycles", 4);
+
+    private static final DoubleProperty aeKlRampFraction = PathPrefs.createPersistentPreference(
+            "qpcat.ae.klRampFraction", 0.8);
+
+    private static final DoubleProperty aeFreeBits = PathPrefs.createPersistentPreference(
+            "qpcat.ae.freeBits", 0.25);
+
+    private static final DoubleProperty aePretrainFraction = PathPrefs.createPersistentPreference(
+            "qpcat.ae.pretrainFraction", 0.1);
+
+    private static final DoubleProperty aeAugNoise = PathPrefs.createPersistentPreference(
+            "qpcat.ae.augNoise", 0.02);
+
+    private static final DoubleProperty aeAugScale = PathPrefs.createPersistentPreference(
+            "qpcat.ae.augScale", 0.1);
+
+    private static final DoubleProperty aeAugDropout = PathPrefs.createPersistentPreference(
+            "qpcat.ae.augDropout", 0.1);
+
+    private static final DoubleProperty aeGradClipNorm = PathPrefs.createPersistentPreference(
+            "qpcat.ae.gradClipNorm", 1.0);
+
+    private static final DoubleProperty aeLrSchedulerFactor = PathPrefs.createPersistentPreference(
+            "qpcat.ae.lrSchedulerFactor", 0.5);
+
+    private static final IntegerProperty aeLrSchedulerPatience = PathPrefs.createPersistentPreference(
+            "qpcat.ae.lrSchedulerPatience", 10);
+
+    private static final IntegerProperty aePointMatchDistance = PathPrefs.createPersistentPreference(
+            "qpcat.ae.pointMatchDistance", 50);
+
+    private static final IntegerProperty aeTileBatchSize = PathPrefs.createPersistentPreference(
+            "qpcat.ae.tileBatchSize", 500);
 
     // ==================== Getters / Setters ====================
 
@@ -154,5 +201,130 @@ public final class QpcatPreferences {
         setAeLabelFromPoints(labelPoints);
         setAeLabelFromDetections(labelDetections);
         setAeCellsOnly(cellsOnly);
+    }
+
+    // ==================== Advanced VAE Getters ====================
+
+    public static double getAeKlBetaMax() { return aeKlBetaMax.get(); }
+    public static int getAeKlCycles() { return aeKlCycles.get(); }
+    public static double getAeKlRampFraction() { return aeKlRampFraction.get(); }
+    public static double getAeFreeBits() { return aeFreeBits.get(); }
+    public static double getAePretrainFraction() { return aePretrainFraction.get(); }
+    public static double getAeAugNoise() { return aeAugNoise.get(); }
+    public static double getAeAugScale() { return aeAugScale.get(); }
+    public static double getAeAugDropout() { return aeAugDropout.get(); }
+    public static double getAeGradClipNorm() { return aeGradClipNorm.get(); }
+    public static double getAeLrSchedulerFactor() { return aeLrSchedulerFactor.get(); }
+    public static int getAeLrSchedulerPatience() { return aeLrSchedulerPatience.get(); }
+    public static int getAePointMatchDistance() { return aePointMatchDistance.get(); }
+    public static int getAeTileBatchSize() { return aeTileBatchSize.get(); }
+
+    // ==================== Preferences Pane ====================
+
+    /**
+     * Installs QP-CAT preferences into QuPath's Edit > Preferences dialog.
+     */
+    public static void installPreferences(QuPathGUI qupath) {
+        if (qupath == null) return;
+
+        ObservableList<org.controlsfx.control.PropertySheet.Item> items =
+                qupath.getPreferencePane().getPropertySheet().getItems();
+
+        // --- KL Annealing ---
+        items.add(new PropertyItemBuilder<>(aeKlBetaMax, Double.class)
+                .name("KL Beta Max")
+                .category(CATEGORY_VAE)
+                .description("Maximum KL divergence weight per annealing cycle (default: 0.5). "
+                        + "Controls reconstruction vs regularization balance. "
+                        + "Lower = better reconstruction, higher = smoother latent space. Range: 0.1-1.0.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeKlCycles, Integer.class)
+                .name("KL Annealing Cycles")
+                .category(CATEGORY_VAE)
+                .description("Number of cyclical KL annealing cycles (default: 4). "
+                        + "More cycles = more exploration before regularization. "
+                        + "Set to 1 for monotonic annealing. Range: 1-10.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeKlRampFraction, Double.class)
+                .name("KL Ramp Fraction")
+                .category(CATEGORY_VAE)
+                .description("Fraction of each cycle spent ramping KL from 0 to beta_max (default: 0.8). "
+                        + "The remaining fraction holds at beta_max. Range: 0.5-1.0.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeFreeBits, Double.class)
+                .name("Free Bits (nats)")
+                .category(CATEGORY_VAE)
+                .description("Minimum KL per latent dimension to prevent posterior collapse (default: 0.25). "
+                        + "Higher = stronger anti-collapse but less smooth latent space. Range: 0.0-1.0.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aePretrainFraction, Double.class)
+                .name("Unsupervised Pre-train Fraction")
+                .category(CATEGORY_VAE)
+                .description("Fraction of epochs to train without classification loss (default: 0.1). "
+                        + "Gives the latent space structure before labels are introduced. Range: 0.0-0.5.")
+                .build());
+
+        // --- Augmentation ---
+        items.add(new PropertyItemBuilder<>(aeAugNoise, Double.class)
+                .name("Augmentation Noise Std")
+                .category(CATEGORY_VAE)
+                .description("Gaussian noise standard deviation for measurement augmentation (default: 0.02). "
+                        + "Applied to normalized features. Range: 0.0-0.1.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeAugScale, Double.class)
+                .name("Augmentation Scale Range")
+                .category(CATEGORY_VAE)
+                .description("Per-feature random scaling range +/- (default: 0.1 = +/-10%). "
+                        + "Simulates staining variability. Range: 0.0-0.3.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeAugDropout, Double.class)
+                .name("Augmentation Feature Dropout")
+                .category(CATEGORY_VAE)
+                .description("Probability of zeroing each feature during training (default: 0.1). "
+                        + "Improves robustness to missing measurements. Range: 0.0-0.3.")
+                .build());
+
+        // --- Training ---
+        items.add(new PropertyItemBuilder<>(aeGradClipNorm, Double.class)
+                .name("Gradient Clip Max Norm")
+                .category(CATEGORY_VAE)
+                .description("Maximum gradient norm for clipping (default: 1.0). "
+                        + "Prevents exploding gradients. Range: 0.5-5.0.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeLrSchedulerFactor, Double.class)
+                .name("LR Scheduler Reduction Factor")
+                .category(CATEGORY_VAE)
+                .description("Factor to reduce learning rate on plateau (default: 0.5 = halve). "
+                        + "Range: 0.1-0.9.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeLrSchedulerPatience, Integer.class)
+                .name("LR Scheduler Patience")
+                .category(CATEGORY_VAE)
+                .description("Epochs without improvement before reducing LR (default: 10). "
+                        + "Range: 5-50.")
+                .build());
+
+        // --- Operational ---
+        items.add(new PropertyItemBuilder<>(aePointMatchDistance, Integer.class)
+                .name("Point Annotation Match Distance (px)")
+                .category(CATEGORY_VAE)
+                .description("Maximum distance in pixels to match a point annotation to the nearest "
+                        + "detection (default: 50). Increase for low-resolution images or large cells.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(aeTileBatchSize, Integer.class)
+                .name("Tile I/O Batch Size")
+                .category(CATEGORY_VAE)
+                .description("Number of tiles read/written per batch during tile-mode training (default: 500). "
+                        + "Higher values use more memory but fewer I/O operations. Range: 100-2000.")
+                .build());
     }
 }

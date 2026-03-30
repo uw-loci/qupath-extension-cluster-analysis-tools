@@ -89,17 +89,12 @@ from appose import NDArray as PyNDArray
 LOGVAR_CLAMP_MIN = -10.0
 LOGVAR_CLAMP_MAX = 10.0
 
-# Free bits: minimum KL per latent dimension (Kingma et al. 2016)
-# Prevents individual dims from collapsing while allowing overall regularization
-FREE_BITS = 0.25  # nats per dimension
-
-# Cyclical KL annealing (Fu et al. 2019)
+# These defaults are overridden by values from QP-CAT Advanced Preferences
+# (Edit > Preferences > QP-CAT: Autoencoder (Advanced))
+FREE_BITS = 0.25
 N_KL_CYCLES = 4
-KL_BETA_MAX = 0.5  # final KL weight per cycle
-KL_RAMP_FRACTION = 0.8  # ramp 0->beta_max over this fraction of each cycle
-
-# Pre-training: train unsupervised for this fraction of epochs
-# before introducing classification loss
+KL_BETA_MAX = 0.5
+KL_RAMP_FRACTION = 0.8
 PRETRAIN_FRACTION = 0.1
 
 
@@ -476,6 +471,52 @@ try:
 except NameError:
     do_augmentation = True
 
+# Advanced parameters from Preferences (override module-level defaults)
+try:
+    KL_BETA_MAX = float(kl_beta_max)
+except NameError:
+    pass
+try:
+    N_KL_CYCLES = int(kl_cycles)
+except NameError:
+    pass
+try:
+    KL_RAMP_FRACTION = float(kl_ramp_fraction)
+except NameError:
+    pass
+try:
+    FREE_BITS = float(free_bits)
+except NameError:
+    pass
+try:
+    PRETRAIN_FRACTION = float(pretrain_fraction)
+except NameError:
+    pass
+try:
+    aug_noise = float(aug_noise_std)
+except NameError:
+    aug_noise = 0.02
+try:
+    aug_scale = float(aug_scale_range)
+except NameError:
+    aug_scale = 0.1
+try:
+    aug_drop = float(aug_dropout_p)
+except NameError:
+    aug_drop = 0.1
+try:
+    grad_clip = float(grad_clip_norm)
+except NameError:
+    grad_clip = 1.0
+try:
+    lr_sched_factor = float(lr_scheduler_factor)
+except NameError:
+    lr_sched_factor = 0.5
+try:
+    lr_sched_patience = int(lr_scheduler_patience)
+except NameError:
+    lr_sched_patience = 10
+
 # Count labeled vs unlabeled
 labeled_mask = label_array >= 0
 n_labeled = int(labeled_mask.sum())
@@ -624,7 +665,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
 
 # ReduceLROnPlateau (standard for VAEs, monitors val loss or train loss)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6)
+    optimizer, mode='min', factor=lr_sched_factor, patience=lr_sched_patience, min_lr=1e-6)
 
 # Mixed precision (CUDA only)
 use_amp = (device == "cuda")
@@ -676,7 +717,7 @@ for epoch in range(epochs):
         # Augmentation target: original (clean) data for reconstruction
         target_data = batch_data
         if do_augmentation and not use_tiles:
-            batch_data = augment_measurements(batch_data)
+            batch_data = augment_measurements(batch_data, aug_noise, aug_scale, aug_drop)
 
         with torch.amp.autocast("cuda", enabled=use_amp):
             if use_tiles:
@@ -707,12 +748,12 @@ for epoch in range(epochs):
         if use_amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
 
         total_recon += recon_loss.item()

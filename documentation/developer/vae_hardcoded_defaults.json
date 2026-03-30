@@ -1,0 +1,75 @@
+{
+  "_description": "Hardcoded constants in the VAE autoencoder that should NOT be changed by normal users. Each entry explains what it controls and why changing it is generally a bad idea. Only modify these if you understand VAE training theory and have a specific reason.",
+
+  "numerical_stability": {
+    "LOGVAR_CLAMP_MIN": {
+      "value": -10.0,
+      "file": "train_autoencoder.py / infer_autoencoder.py",
+      "description": "Lower bound for log-variance clamping in encoder and decoder outputs.",
+      "why_not_change": "Prevents exp(logvar) from underflowing to zero, which causes division-by-zero in the Gaussian NLL loss. The value -10 corresponds to a variance of ~0.000045, which is already vanishingly small. Making it more negative risks NaN gradients. Making it less negative (e.g., -5) artificially constrains the model from learning sharp distributions."
+    },
+    "LOGVAR_CLAMP_MAX": {
+      "value": 10.0,
+      "file": "train_autoencoder.py / infer_autoencoder.py",
+      "description": "Upper bound for log-variance clamping.",
+      "why_not_change": "Prevents exp(logvar) from overflowing (~22026 at logvar=10). Overflow causes NaN loss and corrupts the entire model. The value 10 allows extremely broad distributions which are never needed in practice. Reducing it (e.g., to 5) can help training stability but may prevent the decoder from expressing uncertainty about poorly-reconstructed features."
+    },
+    "epsilon_gnll": {
+      "value": 1e-8,
+      "file": "train_autoencoder.py (gaussian_nll_loss)",
+      "description": "Small constant added to denominator of Gaussian NLL to prevent division by zero.",
+      "why_not_change": "Standard numerical safety epsilon. Too large (e.g., 1e-4) biases the loss. Too small (e.g., 1e-16) may not prevent underflow on some hardware. 1e-8 is the PyTorch convention."
+    },
+    "epsilon_adam": {
+      "value": 1e-8,
+      "file": "train_autoencoder.py (Adam optimizer)",
+      "description": "Adam optimizer epsilon for numerical stability in parameter updates.",
+      "why_not_change": "PyTorch default. Changing to 1e-5 (fast.ai convention) can help with very small gradients but may destabilize training on other datasets. Only change if you observe Adam failing to converge."
+    }
+  },
+
+  "reproducibility": {
+    "random_state": {
+      "value": 42,
+      "file": "train_autoencoder.py (train_test_split)",
+      "description": "Seed for the train/validation split randomization.",
+      "why_not_change": "Ensures the same train/val split across runs for reproducibility. Changing it produces a different split, which means accuracy numbers aren't comparable between runs. If you want to test split sensitivity, run multiple times with different seeds and average the results -- but doing this requires modifying the code, not this constant."
+    }
+  },
+
+  "architecture": {
+    "encoder_hidden_layers": {
+      "value": [128, 64],
+      "file": "train_autoencoder.py (CellVAE.__init__)",
+      "description": "Hidden layer sizes for the MLP encoder. Input -> 128 -> 64 -> latent.",
+      "why_not_change": "The 128-64 bottleneck is well-matched to the typical 20-60 marker inputs in multiplexed imaging. Making layers larger (256-128) increases overfitting risk on small datasets without meaningful capacity gain. Making them smaller (64-32) may underfit on complex marker panels. The architecture must also match exactly between training and inference -- changing this requires retraining all saved models."
+    },
+    "decoder_hidden_layers": {
+      "value": [64, 128],
+      "file": "train_autoencoder.py (CellVAE.__init__)",
+      "description": "Hidden layer sizes for the MLP decoder. Latent -> 64 -> 128 -> output.",
+      "why_not_change": "Mirrors the encoder (standard VAE practice). Asymmetric encoder/decoder can work but requires careful tuning. Same retraining requirement as encoder changes."
+    },
+    "conv_channels": {
+      "value": [32, 64, 128],
+      "file": "train_autoencoder.py (ConvCellVAE.__init__)",
+      "description": "Channel counts for the 3-layer convolutional encoder.",
+      "why_not_change": "The 32-64-128 progression with stride-2 convolutions is a standard lightweight architecture. Increasing channels (64-128-256) quadruples memory usage. AdaptiveAvgPool2d(1) at the end makes the architecture tile-size-agnostic but depends on having sufficient channel depth. Must match between training and inference."
+    },
+    "conv_kernel_stride_padding": {
+      "value": {"kernel": 3, "stride": 2, "padding": 1},
+      "file": "train_autoencoder.py (ConvCellVAE)",
+      "description": "Convolution parameters for spatial downsampling.",
+      "why_not_change": "3x3 kernel with stride 2 and padding 1 halves spatial dimensions per layer (standard pattern). Changing stride to 1 removes downsampling. Changing kernel to 5x5 increases receptive field but adds parameters. The decoder's ConvTranspose2d must use matching output_padding=1 for this stride -- changing one without the other produces dimension mismatches."
+    }
+  },
+
+  "grid_alignment": {
+    "tile_rounding": {
+      "value": 8,
+      "file": "AutoencoderDialog.java (tile size computation)",
+      "description": "Auto-computed tile sizes are rounded to the nearest multiple of 8.",
+      "why_not_change": "GPU memory allocators and CUDA kernels are optimized for dimensions that are multiples of 8 (or 32). Non-aligned dimensions waste memory and can be slower. The 3-layer stride-2 conv encoder divides spatial dims by 8 -- a tile size that's a multiple of 8 ensures clean integer division."
+    }
+  }
+}

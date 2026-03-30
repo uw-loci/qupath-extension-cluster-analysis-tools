@@ -19,6 +19,7 @@ import qupath.ext.qpcat.service.OperationLogger;
 import qupath.ext.qpcat.ui.ClusteringDialog;
 import qupath.ext.qpcat.ui.ClusterManagementDialog;
 import qupath.ext.qpcat.ui.EmbeddingDialog;
+import qupath.ext.qpcat.preferences.QpcatPreferences;
 import qupath.ext.qpcat.ui.AutoencoderDialog;
 import qupath.ext.qpcat.ui.FeatureExtractionDialog;
 import qupath.ext.qpcat.ui.PhenotypingDialog;
@@ -73,6 +74,7 @@ public class SetupQPCAT implements QuPathExtension, GitHubProject {
         logger.info("Installing extension: {}", EXTENSION_NAME);
 
         updateEnvironmentState();
+        QpcatPreferences.installPreferences(qupath);
         Platform.runLater(() -> {
             addMenuItem(qupath);
 

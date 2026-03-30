@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.qpcat.model.ClusteringConfig;
 import qupath.ext.qpcat.model.ClusteringResult;
+import qupath.ext.qpcat.preferences.QpcatPreferences;
 import qupath.ext.qpcat.service.ApposeClusteringService;
 import qupath.ext.qpcat.service.MeasurementExtractor;
 import qupath.ext.qpcat.service.OperationLogger;
@@ -1607,7 +1608,8 @@ public class ClusteringWorkflow {
                     double py = point.getY();
 
                     // Find nearest detection within 50 pixels
-                    double bestDist = 50.0 * 50.0;
+                    double matchDist = QpcatPreferences.getAePointMatchDistance();
+                    double bestDist = matchDist * matchDist;
                     int bestIdx = -1;
                     for (int i = 0; i < n; i++) {
                         double cx = detections.get(i).getROI().getCentroidX();
@@ -1853,7 +1855,7 @@ public class ClusteringWorkflow {
                             + " (" + dets.size() + " cells)...");
 
                     // Process in batches of 500 to limit per-batch memory
-                    int tileBatchSize = 500;
+                    int tileBatchSize = QpcatPreferences.getAeTileBatchSize();
                     for (int batchStart = 0; batchStart < dets.size(); batchStart += tileBatchSize) {
                         int batchEnd = Math.min(batchStart + tileBatchSize, dets.size());
                         List<PathObject> batch = dets.subList(batchStart, batchEnd);
@@ -1900,6 +1902,19 @@ public class ClusteringWorkflow {
                 inputs.put("early_stopping_patience", earlyStoppingPatience);
                 inputs.put("enable_class_weights", enableClassWeights);
                 inputs.put("enable_augmentation", enableAugmentation);
+
+                // Advanced VAE parameters from Preferences
+                inputs.put("kl_beta_max", QpcatPreferences.getAeKlBetaMax());
+                inputs.put("kl_cycles", QpcatPreferences.getAeKlCycles());
+                inputs.put("kl_ramp_fraction", QpcatPreferences.getAeKlRampFraction());
+                inputs.put("free_bits", QpcatPreferences.getAeFreeBits());
+                inputs.put("pretrain_fraction", QpcatPreferences.getAePretrainFraction());
+                inputs.put("aug_noise_std", QpcatPreferences.getAeAugNoise());
+                inputs.put("aug_scale_range", QpcatPreferences.getAeAugScale());
+                inputs.put("aug_dropout_p", QpcatPreferences.getAeAugDropout());
+                inputs.put("grad_clip_norm", QpcatPreferences.getAeGradClipNorm());
+                inputs.put("lr_scheduler_factor", QpcatPreferences.getAeLrSchedulerFactor());
+                inputs.put("lr_scheduler_patience", QpcatPreferences.getAeLrSchedulerPatience());
 
                 if (!useTiles) {
                     // Measurement mode
@@ -2114,7 +2129,7 @@ public class ClusteringWorkflow {
                 if (includeCellMask) nChannels++;
                 inferTileFile = Files.createTempFile(getProjectTempDir(), "qpcat_eval_", ".bin");
                 try (var raf = new java.io.RandomAccessFile(inferTileFile.toFile(), "rw")) {
-                    int batchSz = 500;
+                    int batchSz = QpcatPreferences.getAeTileBatchSize();
                     for (int bs = 0; bs < validDetections.size(); bs += batchSz) {
                         int be = Math.min(bs + batchSz, validDetections.size());
                         float[] batch = readMultiChannelTilesAroundCentroids(
@@ -2319,7 +2334,7 @@ public class ClusteringWorkflow {
                 inferTileFile = Files.createTempFile(
                         getProjectTempDir(), "qpcat_infer_", ".bin");
                 try (var raf = new java.io.RandomAccessFile(inferTileFile.toFile(), "rw")) {
-                    int batchSz = 500;
+                    int batchSz = QpcatPreferences.getAeTileBatchSize();
                     for (int bs = 0; bs < detections.size(); bs += batchSz) {
                         int be = Math.min(bs + batchSz, detections.size());
                         float[] batch = readMultiChannelTilesAroundCentroids(
