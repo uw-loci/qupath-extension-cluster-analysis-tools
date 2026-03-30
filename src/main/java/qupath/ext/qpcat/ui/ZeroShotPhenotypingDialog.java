@@ -13,6 +13,7 @@ import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.qpcat.controller.ClusteringWorkflow;
+import qupath.ext.qpcat.preferences.QpcatPreferences;
 import qupath.ext.qpcat.service.OperationLogger;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
@@ -188,7 +189,7 @@ public class ZeroShotPhenotypingDialog {
         Label heading = new Label("Settings");
         heading.setStyle("-fx-font-weight: bold;");
 
-        thresholdSpinner = new Spinner<>(0.0, 1.0, 0.1, 0.05);
+        thresholdSpinner = new Spinner<>(0.0, 1.0, QpcatPreferences.getZsMinSimilarity(), 0.05);
         thresholdSpinner.setEditable(true);
         thresholdSpinner.setPrefWidth(80);
         thresholdSpinner.setTooltip(new Tooltip(
@@ -209,7 +210,7 @@ public class ZeroShotPhenotypingDialog {
                 + "  similarity scores as measurements (ZS_<PhenotypeName>).\n"
                 + "  Useful for inspecting borderline assignments."));
 
-        tileSizeSpinner = new Spinner<>(64, 512, 224, 32);
+        tileSizeSpinner = new Spinner<>(64, 512, QpcatPreferences.getZsTileSize(), 32);
         tileSizeSpinner.setEditable(true);
         tileSizeSpinner.setPrefWidth(80);
         tileSizeSpinner.setTooltip(new Tooltip(
@@ -218,7 +219,7 @@ public class ZeroShotPhenotypingDialog {
                 + "Smaller tiles focus on the cell itself; larger tiles include context.\n"
                 + "Tiles are read at the image's native resolution."));
 
-        batchSizeSpinner = new Spinner<>(1, 128, 32);
+        batchSizeSpinner = new Spinner<>(1, 128, QpcatPreferences.getZsBatchSize());
         batchSizeSpinner.setEditable(true);
         batchSizeSpinner.setPrefWidth(80);
         batchSizeSpinner.setTooltip(new Tooltip(
@@ -300,6 +301,11 @@ public class ZeroShotPhenotypingDialog {
                 Map<String, Object> result = workflow.runZeroShotPhenotyping(
                         names, prompts, tileSize, batchSize,
                         minSimilarity, mode, progress);
+
+                // Save current spinner values to persistent preferences
+                QpcatPreferences.setZsTileSize(tileSize);
+                QpcatPreferences.setZsBatchSize(batchSize);
+                QpcatPreferences.setZsMinSimilarity(minSimilarity);
 
                 String countsJson = (String) result.get("phenotype_counts");
                 Platform.runLater(() -> {

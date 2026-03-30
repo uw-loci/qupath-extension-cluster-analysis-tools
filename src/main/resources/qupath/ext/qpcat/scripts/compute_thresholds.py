@@ -11,6 +11,10 @@ Inputs (injected by Appose 0.10.0):
   measurements: NDArray (N_cells x N_markers, float64)
   marker_names: list[str]
   normalization: str ("zscore", "minmax", "percentile", "none")
+  histogram_bins: int (optional) -- number of histogram bins (default 50)
+  min_valid_values: int (optional) -- minimum valid values per marker (default 10)
+  gmm_max_iter: int (optional) -- max GMM iterations (default 200)
+  gamma_std_multiplier: float (optional) -- gamma threshold std multiplier (default 1.0)
 
 Outputs (via task.outputs):
   histograms_json: str (JSON) -- per-marker histogram and threshold data
@@ -80,14 +84,34 @@ except ImportError:
     has_gamma = False
     logger.warning("scipy not available, gamma thresholding disabled")
 
-N_BINS = 50
+# Read preferences (injected by Appose, fall back to defaults)
+try:
+    N_BINS = int(histogram_bins)
+except NameError:
+    N_BINS = 50
+
+try:
+    MIN_VALID = int(min_valid_values)
+except NameError:
+    MIN_VALID = 10
+
+try:
+    GMM_MAX_ITER = int(gmm_max_iter)
+except NameError:
+    GMM_MAX_ITER = 200
+
+try:
+    GAMMA_STD_MULT = float(gamma_std_multiplier)
+except NameError:
+    GAMMA_STD_MULT = 1.0
+
 result = {}
 
 for i, marker in enumerate(list(marker_names)):
     values = df_norm.iloc[:, i].values
     valid = values[np.isfinite(values)]
 
-    if len(valid) < 10:
+    if len(valid) < MIN_VALID:
         logger.warning("Marker '%s' has too few valid values (%d), skipping", marker, len(valid))
         continue
 
@@ -110,7 +134,7 @@ for i, marker in enumerate(list(marker_names)):
     # GMM (2-component Gaussian mixture)
     if has_gmm:
         try:
-            gmm = GaussianMixture(n_components=2, random_state=42, max_iter=200)
+            gmm = GaussianMixture(n_components=2, random_state=42, max_iter=GMM_MAX_ITER)
             gmm.fit(valid.reshape(-1, 1))
             means = gmm.means_.flatten()
             stds = np.sqrt(gmm.covariances_.flatten())
@@ -142,8 +166,8 @@ for i, marker in enumerate(list(marker_names)):
             mode = max(0, (alpha - 1) * scale) if alpha > 1 else 0
             std_val = np.sqrt(alpha) * scale
 
-            # Threshold at mode + 1*std (separates background from positive)
-            t = float(mode + std_val - shift)
+            # Threshold at mode + GAMMA_STD_MULT*std (separates background from positive)
+            t = float(mode + GAMMA_STD_MULT * std_val - shift)
             t = max(float(bin_edges[0]), min(float(bin_edges[-1]), t))
             thresholds["gamma"] = round(t, 4)
         except Exception as e:

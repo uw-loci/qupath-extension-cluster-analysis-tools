@@ -17,6 +17,12 @@ Optional inputs:
   spatial_coords: NDArray (N_cells x 2, float64) -- cell XY centroids for spatial analysis
   enable_batch_correction: bool (default False)
   batch_labels: list[int] -- image index per cell for batch correction
+  spatial_knn: int (default 15) -- k neighbors for spatial feature smoothing
+  tsne_perplexity_default: float (default 30.0) -- fallback t-SNE perplexity
+  hdbscan_min_samples_default: int (default 5) -- fallback HDBSCAN min_samples
+  minibatch_kmeans_batch_size: int (default 1024) -- fallback MiniBatchKMeans batch_size
+  banksy_pca_dims_default: int (default 20) -- fallback BANKSY PCA dimensions
+  plot_dpi: int (default 150) -- DPI for saved plot images
 
 Outputs (via task.outputs):
   cluster_labels: NDArray (N_cells,) int32
@@ -56,6 +62,32 @@ try:
 except NameError:
     spatial_data = None
     has_spatial_coords = False
+
+# Read preference-backed defaults (injected from Java QpcatPreferences)
+try:
+    pref_spatial_knn = spatial_knn
+except NameError:
+    pref_spatial_knn = 15
+try:
+    pref_tsne_perplexity = tsne_perplexity_default
+except NameError:
+    pref_tsne_perplexity = 30.0
+try:
+    pref_hdbscan_min_samples = hdbscan_min_samples_default
+except NameError:
+    pref_hdbscan_min_samples = 5
+try:
+    pref_minibatch_batch_size = minibatch_kmeans_batch_size
+except NameError:
+    pref_minibatch_batch_size = 1024
+try:
+    pref_banksy_pca_dims = banksy_pca_dims_default
+except NameError:
+    pref_banksy_pca_dims = 20
+try:
+    pref_plot_dpi = plot_dpi
+except NameError:
+    pref_plot_dpi = 150
 
 # 2. Normalize
 task.update("Normalizing measurements...", current=0, maximum=6)
@@ -100,7 +132,7 @@ if do_spatial_smoothing and has_spatial_coords:
     import scipy.sparse as sp
 
     n = len(spatial_data)
-    k = min(15, n - 1)
+    k = min(pref_spatial_knn, n - 1)
     nn = NearestNeighbors(n_neighbors=k, metric='euclidean')
     nn.fit(spatial_data)
     distances, indices = nn.kneighbors(spatial_data)
@@ -174,7 +206,7 @@ elif embedding_method == "pca":
 
 elif embedding_method == "tsne":
     from sklearn.manifold import TSNE
-    perplexity = embedding_params.get("perplexity", 30.0)
+    perplexity = embedding_params.get("perplexity", pref_tsne_perplexity)
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
     embedding_result = tsne.fit_transform(df_norm.values)
     logger.info("t-SNE: perplexity=%.1f", perplexity)
@@ -210,7 +242,7 @@ elif algorithm == "kmeans":
 elif algorithm == "hdbscan":
     from sklearn.cluster import HDBSCAN
     min_cluster_size = algorithm_params.get("min_cluster_size", 15)
-    min_samples = algorithm_params.get("min_samples", 5)
+    min_samples = algorithm_params.get("min_samples", pref_hdbscan_min_samples)
     logger.info("HDBSCAN: min_cluster_size=%d, min_samples=%d",
                 min_cluster_size, min_samples)
     hdb = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
@@ -227,7 +259,7 @@ elif algorithm == "agglomerative":
 elif algorithm == "minibatchkmeans":
     from sklearn.cluster import MiniBatchKMeans
     n_clusters = algorithm_params.get("n_clusters", 10)
-    batch_size = algorithm_params.get("batch_size", 1024)
+    batch_size = algorithm_params.get("batch_size", pref_minibatch_batch_size)
     logger.info("MiniBatchKMeans: n_clusters=%d, batch_size=%d",
                 n_clusters, batch_size)
     mbkm = MiniBatchKMeans(n_clusters=n_clusters, batch_size=batch_size,
@@ -255,7 +287,7 @@ elif algorithm == "banksy":
     lambda_param = algorithm_params.get("lambda_param", 0.2)
     k_geom = algorithm_params.get("k_geom", 15)
     resolution = algorithm_params.get("resolution", 0.7)
-    pca_dims = algorithm_params.get("pca_dims", 20)
+    pca_dims = algorithm_params.get("pca_dims", pref_banksy_pca_dims)
     logger.info("BANKSY: lambda=%.2f, k_geom=%d, resolution=%.2f, pca_dims=%d",
                 lambda_param, k_geom, resolution, pca_dims)
 
@@ -471,7 +503,7 @@ if do_plots and plot_dir and can_analyze:
                            dendrogram=True, standard_scale='var',
                            show=False, return_fig=True)
         dotplot_path = os.path.join(plot_dir, 'cluster_dotplot.png')
-        dp.savefig(dotplot_path, dpi=150, bbox_inches='tight')
+        dp.savefig(dotplot_path, dpi=pref_plot_dpi, bbox_inches='tight')
         plt.close('all')
         plot_paths['dotplot'] = dotplot_path
         logger.info("Saved dotplot: %s", dotplot_path)
@@ -484,7 +516,7 @@ if do_plots and plot_dir and can_analyze:
                               dendrogram=True, standard_scale='var',
                               show=False, return_fig=True)
         matrixplot_path = os.path.join(plot_dir, 'cluster_matrixplot.png')
-        mp.savefig(matrixplot_path, dpi=150, bbox_inches='tight')
+        mp.savefig(matrixplot_path, dpi=pref_plot_dpi, bbox_inches='tight')
         plt.close('all')
         plot_paths['matrixplot'] = matrixplot_path
         logger.info("Saved matrixplot: %s", matrixplot_path)
@@ -495,7 +527,7 @@ if do_plots and plot_dir and can_analyze:
     try:
         sc.pl.paga(adata, show=False)
         paga_path = os.path.join(plot_dir, 'paga_graph.png')
-        plt.savefig(paga_path, dpi=150, bbox_inches='tight')
+        plt.savefig(paga_path, dpi=pref_plot_dpi, bbox_inches='tight')
         plt.close('all')
         plot_paths['paga'] = paga_path
         logger.info("Saved PAGA graph: %s", paga_path)
@@ -509,7 +541,7 @@ if do_plots and plot_dir and can_analyze:
                                        groupby='cluster', dendrogram=True,
                                        show=False, return_fig=True)
             violin_path = os.path.join(plot_dir, 'stacked_violin.png')
-            sv.savefig(violin_path, dpi=150, bbox_inches='tight')
+            sv.savefig(violin_path, dpi=pref_plot_dpi, bbox_inches='tight')
             plt.close('all')
             plot_paths['stacked_violin'] = violin_path
             logger.info("Saved stacked violin: %s", violin_path)
@@ -523,7 +555,7 @@ if do_plots and plot_dir and can_analyze:
             sc.pl.embedding(adata, basis='embed', color='cluster',
                             show=False, ax=ax)
             embed_path = os.path.join(plot_dir, 'cluster_embedding.png')
-            fig.savefig(embed_path, dpi=150, bbox_inches='tight')
+            fig.savefig(embed_path, dpi=pref_plot_dpi, bbox_inches='tight')
             plt.close('all')
             plot_paths['embedding'] = embed_path
             logger.info("Saved embedding plot: %s", embed_path)
@@ -536,7 +568,7 @@ if do_plots and plot_dir and can_analyze:
         try:
             sq.pl.nhood_enrichment(adata, cluster_key='cluster', show=False)
             nhood_path = os.path.join(plot_dir, 'nhood_enrichment.png')
-            plt.savefig(nhood_path, dpi=150, bbox_inches='tight')
+            plt.savefig(nhood_path, dpi=pref_plot_dpi, bbox_inches='tight')
             plt.close('all')
             plot_paths['nhood_enrichment'] = nhood_path
             logger.info("Saved neighborhood enrichment heatmap: %s", nhood_path)
@@ -562,7 +594,7 @@ if do_plots and plot_dir and can_analyze:
             ax.legend(title='Cluster', markerscale=5, fontsize='small',
                       loc='center left', bbox_to_anchor=(1, 0.5))
             spatial_path = os.path.join(plot_dir, 'spatial_scatter.png')
-            fig.savefig(spatial_path, dpi=150, bbox_inches='tight')
+            fig.savefig(spatial_path, dpi=pref_plot_dpi, bbox_inches='tight')
             plt.close('all')
             plot_paths['spatial_scatter'] = spatial_path
             logger.info("Saved spatial scatter: %s", spatial_path)

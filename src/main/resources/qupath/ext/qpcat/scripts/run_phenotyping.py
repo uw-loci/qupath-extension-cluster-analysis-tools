@@ -11,6 +11,7 @@ Inputs (injected by Appose 0.10.0):
   normalization: str ("zscore", "minmax", "percentile", "none")
   phenotype_rules: str (JSON) -- list of {cellType, marker: pos/neg, ...}
   gates_json: str (JSON) -- {"marker_name": threshold, ...} per-marker gates
+  pheno_gate_max: float (optional) -- default gate for minmax/percentile (default 0.5)
 
 Outputs (via task.outputs):
   phenotype_labels: NDArray (N_cells,) int32 -- index into phenotype_names
@@ -69,13 +70,19 @@ logger.info("Loaded %d phenotype rules", len(rules))
 gates = json.loads(gates_json)
 logger.info("Loaded per-marker gates for %d markers", len(gates))
 
+# Read gate max preference (injected by Appose, fall back to default)
+try:
+    gate_max = float(pheno_gate_max)
+except NameError:
+    gate_max = 0.5
+
 # Compute default gate based on normalization
 if normalization in ("minmax", "percentile"):
-    default_gate = 0.5
+    default_gate = gate_max
 elif normalization == "zscore":
     default_gate = 0.0
 else:
-    default_gate = 0.5
+    default_gate = gate_max
 
 # Build marker name -> column index lookup
 marker_idx = {name: i for i, name in enumerate(list(marker_names))}

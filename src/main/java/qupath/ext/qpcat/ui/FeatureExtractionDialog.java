@@ -11,6 +11,7 @@ import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.qpcat.controller.ClusteringWorkflow;
+import qupath.ext.qpcat.preferences.QpcatPreferences;
 import qupath.ext.qpcat.service.OperationLogger;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
@@ -138,7 +139,7 @@ public class FeatureExtractionDialog {
         Label heading = new Label("Settings");
         heading.setStyle("-fx-font-weight: bold;");
 
-        tileSizeSpinner = new Spinner<>(64, 512, 224, 32);
+        tileSizeSpinner = new Spinner<>(64, 512, QpcatPreferences.getFmTileSize(), 32);
         tileSizeSpinner.setEditable(true);
         tileSizeSpinner.setPrefWidth(80);
         tileSizeSpinner.setTooltip(new Tooltip(
@@ -146,7 +147,7 @@ public class FeatureExtractionDialog {
                 + "Default: 224 (standard for most vision models).\n"
                 + "Tiles are read at the image's native resolution."));
 
-        batchSizeSpinner = new Spinner<>(1, 128, 32);
+        batchSizeSpinner = new Spinner<>(1, 128, QpcatPreferences.getFmBatchSize());
         batchSizeSpinner.setEditable(true);
         batchSizeSpinner.setPrefWidth(80);
         batchSizeSpinner.setTooltip(new Tooltip(
@@ -228,6 +229,10 @@ public class FeatureExtractionDialog {
                         modelId, tileSize, batchSize,
                         hfToken.isEmpty() ? null : hfToken,
                         progress);
+
+                // Save current spinner values to persistent preferences
+                QpcatPreferences.setFmTileSize(tileSize);
+                QpcatPreferences.setFmBatchSize(batchSize);
 
                 Platform.runLater(() -> {
                     statusLabel.setText("Feature extraction complete: "

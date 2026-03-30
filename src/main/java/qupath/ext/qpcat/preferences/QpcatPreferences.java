@@ -306,14 +306,19 @@ public final class QpcatPreferences {
     public static double getPhenoGammaStdMultiplier() { return phenoGammaStdMultiplier.get(); }
     public static double getPhenoGateMax() { return phenoGateMax.get(); }
 
-    // Feature extraction getters
+    // Feature extraction getters/setters
     public static int getFmTileSize() { return fmTileSize.get(); }
+    public static void setFmTileSize(int v) { fmTileSize.set(v); }
     public static int getFmBatchSize() { return fmBatchSize.get(); }
+    public static void setFmBatchSize(int v) { fmBatchSize.set(v); }
 
-    // Zero-shot getters
+    // Zero-shot getters/setters
     public static int getZsTileSize() { return zsTileSize.get(); }
+    public static void setZsTileSize(int v) { zsTileSize.set(v); }
     public static int getZsBatchSize() { return zsBatchSize.get(); }
+    public static void setZsBatchSize(int v) { zsBatchSize.set(v); }
     public static double getZsMinSimilarity() { return zsMinSimilarity.get(); }
+    public static void setZsMinSimilarity(double v) { zsMinSimilarity.set(v); }
 
     // Service getters
     public static int getTaskMaxRetries() { return taskMaxRetries.get(); }

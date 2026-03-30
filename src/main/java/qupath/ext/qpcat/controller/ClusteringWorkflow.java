@@ -510,6 +510,10 @@ public class ClusteringWorkflow {
         inputs.put("measurements", measurementsNd);
         inputs.put("marker_names", List.of(extraction.getMeasurementNames()));
         inputs.put("normalization", normalization);
+        inputs.put("histogram_bins", QpcatPreferences.getPhenoHistogramBins());
+        inputs.put("min_valid_values", QpcatPreferences.getPhenoMinValidValues());
+        inputs.put("gmm_max_iter", QpcatPreferences.getPhenoGmmMaxIter());
+        inputs.put("gamma_std_multiplier", QpcatPreferences.getPhenoGammaStdMultiplier());
 
         try {
             ApposeClusteringService service = ApposeClusteringService.getInstance();
@@ -552,6 +556,7 @@ public class ClusteringWorkflow {
         inputs.put("normalization", normalization);
         inputs.put("phenotype_rules", phenotypeRulesJson);
         inputs.put("gates_json", gatesJson);
+        inputs.put("pheno_gate_max", QpcatPreferences.getPhenoGateMax());
 
         NDArray labelsNd = null;
 
@@ -673,6 +678,14 @@ public class ClusteringWorkflow {
             inputs.put("enable_batch_correction", true);
             inputs.put("batch_labels", batchLabels);
         }
+
+        // Preference-backed defaults (overridable via QP-CAT preferences UI)
+        inputs.put("spatial_knn", QpcatPreferences.getClusterSpatialKnn());
+        inputs.put("tsne_perplexity_default", QpcatPreferences.getClusterTsnePerplexity());
+        inputs.put("hdbscan_min_samples_default", QpcatPreferences.getClusterHdbscanMinSamples());
+        inputs.put("minibatch_kmeans_batch_size", QpcatPreferences.getClusterMiniBatchSize());
+        inputs.put("banksy_pca_dims_default", QpcatPreferences.getClusterBanksyPcaDims());
+        inputs.put("plot_dpi", QpcatPreferences.getClusterPlotDpi());
 
         NDArray labelsNd = null;
         NDArray embNd = null;
