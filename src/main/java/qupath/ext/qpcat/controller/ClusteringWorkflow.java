@@ -1999,7 +1999,10 @@ public class ClusteringWorkflow {
                         String.valueOf(task.outputs.get("model_state_base64")));
                 resultMap.put("class_names", classNames.toArray(new String[0]));
                 resultMap.put("accuracy", task.outputs.get("final_class_accuracy"));
+                resultMap.put("best_val_accuracy", task.outputs.get("best_val_accuracy"));
+                resultMap.put("best_epoch", task.outputs.get("best_epoch"));
                 resultMap.put("n_classes", task.outputs.get("n_classes"));
+                resultMap.put("active_units", task.outputs.get("active_units"));
 
                 try { latentNd.close(); } catch (Exception ignored) {}
                 try { predNd.close(); } catch (Exception ignored) {}

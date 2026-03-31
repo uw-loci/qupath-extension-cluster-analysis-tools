@@ -105,6 +105,8 @@ public class AutoencoderDialog {
     private double trainedDownsample;
     private boolean trainedIncludeMask;
     private boolean trainedCellsOnly;
+    // Training metrics (saved with model for inspection)
+    private Map<String, Object> trainedMetrics = new LinkedHashMap<>();
 
     public AutoencoderDialog(QuPathGUI qupath) {
         this.qupath = qupath;
@@ -1119,6 +1121,27 @@ public class AutoencoderDialog {
                 trainedIncludeMask = includeMask;
                 trainedCellsOnly = cellsOnly;
 
+                // Capture training metrics for model metadata
+                trainedMetrics.clear();
+                trainedMetrics.put("final_accuracy", result.get("accuracy"));
+                trainedMetrics.put("best_val_accuracy", result.get("best_val_accuracy"));
+                trainedMetrics.put("best_epoch", result.get("best_epoch"));
+                trainedMetrics.put("n_classes", result.get("n_classes"));
+                trainedMetrics.put("active_units", result.get("active_units"));
+                trainedMetrics.put("latent_dim", latentDim);
+                trainedMetrics.put("epochs", epochs);
+                trainedMetrics.put("learning_rate", lr);
+                trainedMetrics.put("batch_size", batchSize);
+                trainedMetrics.put("supervision_weight", supWeight);
+                trainedMetrics.put("validation_split", valSplit);
+                trainedMetrics.put("early_stop_patience", earlyStopPatience);
+                trainedMetrics.put("class_weights", useClassWeights);
+                trainedMetrics.put("augmentation", useAugmentation);
+                trainedMetrics.put("normalization", normId);
+                trainedMetrics.put("n_images", selectedImageEntries.size());
+                trainedMetrics.put("trained_at",
+                        java.time.LocalDateTime.now().toString());
+
                 double accuracy = ((Number) result.get("accuracy")).doubleValue();
                 int nClasses = ((Number) result.get("n_classes")).intValue();
 
@@ -1412,6 +1435,7 @@ public class AutoencoderDialog {
 
             // Build metadata JSON
             Map<String, Object> metadata = new LinkedHashMap<>();
+            // Inference config (required to apply model)
             metadata.put("input_mode", trainedInputMode);
             metadata.put("tile_size", trainedTileSize);
             metadata.put("downsample", trainedDownsample);
@@ -1421,6 +1445,9 @@ public class AutoencoderDialog {
                     ? List.of(trainedClassNames) : List.of());
             metadata.put("measurements", trainedMeasurements != null
                     ? trainedMeasurements : List.of());
+
+            // Training metrics and hyperparameters (for inspection/reproducibility)
+            metadata.putAll(trainedMetrics);
 
             // Prompt for name
             String defaultName = "autoencoder_" + trainedClassNames.length + "classes";
@@ -1444,7 +1471,9 @@ public class AutoencoderDialog {
             for (var entry : metadata.entrySet()) {
                 json.append("  \"").append(entry.getKey()).append("\": ");
                 Object val = entry.getValue();
-                if (val instanceof String) {
+                if (val == null) {
+                    json.append("null");
+                } else if (val instanceof String) {
                     json.append("\"").append(val).append("\"");
                 } else if (val instanceof Boolean || val instanceof Number) {
                     json.append(val);
