@@ -99,7 +99,7 @@ for batch_idx in range(n_batches):
 
     batch_tensor = torch.stack(batch_tensors).to(device)
 
-    with torch.no_grad(), torch.autocast(device_type=device if device != "mps" else "cpu",
+    with torch.no_grad(), torch.autocast(device_type=device,
                                           enabled=(device == "cuda")):
         features = model(batch_tensor)
 

@@ -719,7 +719,7 @@ for epoch in range(epochs):
         if do_augmentation and not use_tiles:
             batch_data = augment_measurements(batch_data, aug_noise, aug_scale, aug_drop)
 
-        with torch.amp.autocast("cuda", enabled=use_amp):
+        with torch.amp.autocast(device, enabled=use_amp):
             if use_tiles:
                 recon, _, mu, logvar, z, class_logits = model(batch_data)
                 recon_loss = F.mse_loss(recon, target_data, reduction='mean')
