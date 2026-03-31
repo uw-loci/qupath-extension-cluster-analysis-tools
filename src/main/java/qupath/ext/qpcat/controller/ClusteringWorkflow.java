@@ -2080,6 +2080,7 @@ public class ClusteringWorkflow {
         int totalCells = 0;
         int totalCorrect = 0;
         int totalLabeled = 0;
+        List<Map<String, Object>> misclassifications = new ArrayList<>();
 
         // confusion_matrix[actual][predicted] = count
         Map<String, Map<String, Integer>> confusionMatrix = new LinkedHashMap<>();
@@ -2229,7 +2230,20 @@ public class ClusteringWorkflow {
                 String predictedClass = predictions[i] >= 0 && predictions[i] < classNames.length
                         ? classNames[predictions[i]] : "Unknown";
 
-                if (actualClass.equals(predictedClass)) totalCorrect++;
+                if (actualClass.equals(predictedClass)) {
+                    totalCorrect++;
+                } else {
+                    // Collect misclassification for navigation
+                    var det = validDetections.get(i);
+                    Map<String, Object> mis = new LinkedHashMap<>();
+                    mis.put("image", entry.getImageName());
+                    mis.put("imageId", entry.getID());
+                    mis.put("x", det.getROI().getCentroidX());
+                    mis.put("y", det.getROI().getCentroidY());
+                    mis.put("actual", actualClass);
+                    mis.put("predicted", predictedClass);
+                    misclassifications.add(mis);
+                }
 
                 // Update confusion matrix
                 Map<String, Integer> row = confusionMatrix.get(actualClass);
@@ -2245,6 +2259,7 @@ public class ClusteringWorkflow {
         result.put("total_labeled", totalLabeled);
         result.put("total_cells", totalCells);
         result.put("class_names", classNames);
+        result.put("misclassifications", misclassifications);
 
         double accuracy = totalLabeled > 0 ? (double) totalCorrect / totalLabeled * 100 : 0;
         logger.info("[TEST] Evaluation: {}/{} correct ({} labeled cells across {} images)",

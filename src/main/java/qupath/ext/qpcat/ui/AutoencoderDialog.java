@@ -1346,23 +1346,25 @@ public class AutoencoderDialog {
         thread.start();
     }
 
+    @SuppressWarnings("unchecked")
     private void showEvaluationResults(Map<String, Object> evalResult) {
-        @SuppressWarnings("unchecked")
         Map<String, Map<String, Integer>> confusionMatrix =
                 (Map<String, Map<String, Integer>>) evalResult.get("confusion_matrix");
         int totalCorrect = ((Number) evalResult.get("correct")).intValue();
         int totalLabeled = ((Number) evalResult.get("total_labeled")).intValue();
         int totalCells = ((Number) evalResult.get("total_cells")).intValue();
         String[] classNames = (String[]) evalResult.get("class_names");
+        List<Map<String, Object>> misclassifications =
+                (List<Map<String, Object>>) evalResult.get("misclassifications");
 
         double accuracy = totalLabeled > 0 ? (double) totalCorrect / totalLabeled * 100 : 0;
 
+        // Summary text
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("Overall accuracy: %.1f%% (%d / %d labeled cells)\n",
                 accuracy, totalCorrect, totalLabeled));
         sb.append(String.format("Total cells evaluated: %d\n\n", totalCells));
 
-        // Per-class breakdown
         sb.append("Per-class results:\n");
         sb.append(String.format("%-20s %8s %8s %8s\n", "Class", "Correct", "Total", "Accuracy"));
         sb.append("-".repeat(50)).append("\n");
@@ -1376,7 +1378,6 @@ public class AutoencoderDialog {
                     className, classCorrect, classTotal, classAcc));
         }
 
-        // Confusion matrix
         sb.append("\nConfusion Matrix (rows=actual, cols=predicted):\n");
         sb.append(String.format("%-15s", "Actual\\Pred"));
         for (String cn : classNames) {
@@ -1396,22 +1397,146 @@ public class AutoencoderDialog {
         statusLabel.setText(String.format("Evaluation: %.1f%% accuracy (%d/%d)",
                 accuracy, totalCorrect, totalLabeled));
 
-        // Show in a text dialog
+        // Summary text area
         TextArea textArea = new TextArea(sb.toString());
         textArea.setEditable(false);
         textArea.setFont(javafx.scene.text.Font.font("monospace", 12));
-        textArea.setPrefRowCount(Math.min(classNames.length + 12, 30));
+        textArea.setPrefRowCount(Math.min(classNames.length + 12, 20));
         textArea.setPrefColumnCount(60);
+
+        // Misclassification table
+        javafx.scene.control.TableView<Map<String, Object>> misTable = new javafx.scene.control.TableView<>();
+        misTable.setPlaceholder(new Label("No misclassifications (100% accuracy)"));
+        misTable.setPrefHeight(250);
+
+        javafx.scene.control.TableColumn<Map<String, Object>, String> imgCol = new javafx.scene.control.TableColumn<>("Image");
+        imgCol.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(
+                String.valueOf(cd.getValue().get("image"))));
+        imgCol.setPrefWidth(150);
+
+        javafx.scene.control.TableColumn<Map<String, Object>, String> actualCol = new javafx.scene.control.TableColumn<>("Actual");
+        actualCol.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(
+                String.valueOf(cd.getValue().get("actual"))));
+        actualCol.setPrefWidth(100);
+
+        javafx.scene.control.TableColumn<Map<String, Object>, String> predCol = new javafx.scene.control.TableColumn<>("Predicted");
+        predCol.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(
+                String.valueOf(cd.getValue().get("predicted"))));
+        predCol.setPrefWidth(100);
+
+        javafx.scene.control.TableColumn<Map<String, Object>, String> locCol = new javafx.scene.control.TableColumn<>("Location");
+        locCol.setCellValueFactory(cd -> {
+            double x = ((Number) cd.getValue().get("x")).doubleValue();
+            double y = ((Number) cd.getValue().get("y")).doubleValue();
+            return new javafx.beans.property.SimpleStringProperty(
+                    String.format("%.0f, %.0f", x, y));
+        });
+        locCol.setPrefWidth(100);
+
+        misTable.getColumns().addAll(List.of(imgCol, actualCol, predCol, locCol));
+        if (misclassifications != null) {
+            misTable.getItems().addAll(misclassifications);
+        }
+
+        // Double-click to navigate to the misclassified object
+        misTable.setRowFactory(tv -> {
+            javafx.scene.control.TableRow<Map<String, Object>> row =
+                    new javafx.scene.control.TableRow<>();
+            row.setOnMouseClicked(event -> {
+                if (event.getClickCount() == 2 && !row.isEmpty()) {
+                    navigateToMisclassification(row.getItem());
+                }
+            });
+            return row;
+        });
+
+        Label misLabel = new Label(misclassifications != null
+                ? misclassifications.size() + " misclassified cells (double-click to navigate):"
+                : "No misclassification data.");
+        misLabel.setStyle("-fx-font-weight: bold;");
+
+        VBox content = new VBox(10, textArea, misLabel, misTable);
+        VBox.setVgrow(misTable, Priority.ALWAYS);
 
         Dialog<Void> resultDialog = new Dialog<>();
         resultDialog.initOwner(owner);
         resultDialog.setTitle(TEST_BADGE + "Evaluation Results");
         resultDialog.setHeaderText(String.format("Accuracy: %.1f%% (%d/%d labeled cells)",
                 accuracy, totalCorrect, totalLabeled));
-        resultDialog.getDialogPane().setContent(textArea);
+        resultDialog.getDialogPane().setContent(content);
+        resultDialog.getDialogPane().setPrefWidth(600);
+        resultDialog.getDialogPane().setPrefHeight(600);
         resultDialog.getDialogPane().getButtonTypes().add(ButtonType.OK);
         resultDialog.setResizable(true);
         resultDialog.show();
+    }
+
+    /** Navigate to a misclassified object: open image, center viewer, select detection. */
+    private void navigateToMisclassification(Map<String, Object> mis) {
+        String imageName = String.valueOf(mis.get("image"));
+        String imageId = mis.get("imageId") != null ? String.valueOf(mis.get("imageId")) : null;
+        double x = ((Number) mis.get("x")).doubleValue();
+        double y = ((Number) mis.get("y")).doubleValue();
+
+        var project = qupath.getProject();
+        if (project == null) return;
+
+        // Check if we need to switch images
+        var currentData = qupath.getImageData();
+        String currentName = currentData != null
+                ? currentData.getServer().getMetadata().getName() : null;
+        boolean needsSwitch = !imageName.equals(currentName);
+
+        if (needsSwitch) {
+            for (var entry : project.getImageList()) {
+                boolean match = imageId != null
+                        ? imageId.equals(entry.getID())
+                        : imageName.equals(entry.getImageName());
+                if (match) {
+                    Platform.runLater(() -> {
+                        try {
+                            qupath.openImageEntry(entry);
+                            // Navigate after image loads
+                            Platform.runLater(() -> centerAndSelectDetection(x, y));
+                        } catch (Exception e) {
+                            logger.warn("Failed to open image: {}", e.getMessage());
+                        }
+                    });
+                    return;
+                }
+            }
+            logger.warn("Could not find image '{}' in project", imageName);
+        } else {
+            Platform.runLater(() -> centerAndSelectDetection(x, y));
+        }
+    }
+
+    /** Center the viewer on coordinates and select the nearest detection. */
+    private void centerAndSelectDetection(double x, double y) {
+        var viewer = qupath.getViewer();
+        if (viewer == null) return;
+
+        viewer.setCenterPixelLocation(x, y);
+
+        var imageData = viewer.getImageData();
+        if (imageData == null) return;
+
+        // Find nearest detection to the coordinates
+        PathObject nearest = null;
+        double bestDist = Double.MAX_VALUE;
+        for (PathObject det : imageData.getHierarchy().getDetectionObjects()) {
+            double dx = det.getROI().getCentroidX() - x;
+            double dy = det.getROI().getCentroidY() - y;
+            double dist = dx * dx + dy * dy;
+            if (dist < bestDist) {
+                bestDist = dist;
+                nearest = det;
+            }
+        }
+
+        if (nearest != null) {
+            imageData.getHierarchy().getSelectionModel().setSelectedObject(nearest);
+        }
     }
 
     // ==================== Save / Load Model ====================
