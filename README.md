@@ -4,7 +4,7 @@ Python-powered cell analysis for highly multiplexed imaging data in [QuPath](htt
 
 QP-CAT embeds a full scientific Python environment (via [Appose](https://github.com/apposed/appose)) directly within QuPath -- no external servers, no conda environments to manage manually, no command-line tools. It provides unsupervised clustering, rule-based and zero-shot phenotyping, autoencoder-based cell classification, foundation model feature extraction, dimensionality reduction, spatial analysis, and interoperability export, all accessible through a GUI.
 
-**Repository:** [uw-loci/qupath-extension-cluster-analysis-tools](https://github.com/uw-loci/qupath-extension-cluster-analysis-tools)
+**Repository:** [uw-loci/qupath-extension-cell-analysis-tools](https://github.com/uw-loci/qupath-extension-cell-analysis-tools)
 
 ### Documentation
 
@@ -46,7 +46,7 @@ QP-CAT embeds a full scientific Python environment (via [Appose](https://github.
 
 ### From GitHub Releases
 
-1. Download the latest `.jar` from the [Releases](https://github.com/uw-loci/qupath-extension-cluster-analysis-tools/releases) page
+1. Download the latest `.jar` from the [Releases](https://github.com/uw-loci/qupath-extension-cell-analysis-tools/releases) page
 2. Drag the JAR onto the QuPath window, or place it in your QuPath extensions directory
 3. Restart QuPath
 4. Go to **Extensions > QP-CAT > Setup Clustering Environment** and click "Setup"
@@ -55,8 +55,8 @@ QP-CAT embeds a full scientific Python environment (via [Appose](https://github.
 ### Building from Source
 
 ```bash
-git clone https://github.com/uw-loci/qupath-extension-cluster-analysis-tools.git
-cd qupath-extension-cluster-analysis-tools
+git clone https://github.com/uw-loci/qupath-extension-cell-analysis-tools.git
+cd qupath-extension-cell-analysis-tools
 ./gradlew build
 ```
 
@@ -492,8 +492,8 @@ QP-CAT operates on detection objects (cells). Run cell detection first:
 ## Building from Source
 
 ```bash
-git clone https://github.com/uw-loci/qupath-extension-cluster-analysis-tools.git
-cd qupath-extension-cluster-analysis-tools
+git clone https://github.com/uw-loci/qupath-extension-cell-analysis-tools.git
+cd qupath-extension-cell-analysis-tools
 ./gradlew build
 ```
 
