@@ -1,8 +1,8 @@
-# QP-CAT: Cluster Analysis Tools for QuPath
+# QP-CAT: Cell Analysis Tools for QuPath
 
-Python-powered clustering and phenotyping for highly multiplexed imaging data in [QuPath](https://qupath.github.io/).
+Python-powered cell analysis for highly multiplexed imaging data in [QuPath](https://qupath.github.io/).
 
-QP-CAT embeds a full scientific Python environment (via [Appose](https://github.com/apposed/appose)) directly within QuPath -- no external servers, no conda environments to manage manually, no command-line tools. It provides unsupervised clustering, rule-based phenotyping, dimensionality reduction, spatial analysis, and interoperability export, all accessible through a GUI.
+QP-CAT embeds a full scientific Python environment (via [Appose](https://github.com/apposed/appose)) directly within QuPath -- no external servers, no conda environments to manage manually, no command-line tools. It provides unsupervised clustering, rule-based and zero-shot phenotyping, autoencoder-based cell classification, foundation model feature extraction, dimensionality reduction, spatial analysis, and interoperability export, all accessible through a GUI.
 
 **Repository:** [uw-loci/qupath-extension-cluster-analysis-tools](https://github.com/uw-loci/qupath-extension-cluster-analysis-tools)
 
