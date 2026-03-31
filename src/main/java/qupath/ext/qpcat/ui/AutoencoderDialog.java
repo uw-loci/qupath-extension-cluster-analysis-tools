@@ -427,8 +427,8 @@ public class AutoencoderDialog {
         downsampleCombo.setOnAction(e -> updateDownsampleWarning());
         updateDownsampleWarning();
 
-        HBox tileRow = new HBox(10, new Label("Tile size (px):"), tileSizeSpinner,
-                new Label("Downsample:"), downsampleCombo, tileInfo);
+        HBox tileRow = new HBox(10, tipLabel("Tile size (px):", tileSizeSpinner), tileSizeSpinner,
+                tipLabel("Downsample:", downsampleCombo), downsampleCombo, tileInfo);
         tileRow.setAlignment(Pos.CENTER_LEFT);
         tileRow.setDisable(true);
 
@@ -450,7 +450,7 @@ public class AutoencoderDialog {
                 + "Z-score: recommended for measurements.\n"
                 + "Min-Max: recommended for tile pixel values."));
 
-        HBox normRow = new HBox(10, new Label("Normalization:"), normalizationCombo);
+        HBox normRow = new HBox(10, tipLabel("Normalization:", normalizationCombo), normalizationCombo);
         normRow.setAlignment(Pos.CENTER_LEFT);
 
         return new VBox(5, heading,
@@ -518,13 +518,13 @@ public class AutoencoderDialog {
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(5);
-        grid.addRow(0, new Label("Latent dimensions:"), latentDimSpinner,
-                       new Label("Epochs:"), epochsSpinner);
-        grid.addRow(1, new Label("Learning rate:"), learningRateSpinner,
-                       new Label("Batch size:"), batchSizeSpinner);
-        grid.addRow(2, new Label("Supervision weight:"), supervisionWeightSpinner,
-                       new Label("Val. split:"), valSplitSpinner);
-        grid.addRow(3, new Label("Early stop patience:"), earlyStopSpinner);
+        grid.addRow(0, tipLabel("Latent dimensions:", latentDimSpinner), latentDimSpinner,
+                       tipLabel("Epochs:", epochsSpinner), epochsSpinner);
+        grid.addRow(1, tipLabel("Learning rate:", learningRateSpinner), learningRateSpinner,
+                       tipLabel("Batch size:", batchSizeSpinner), batchSizeSpinner);
+        grid.addRow(2, tipLabel("Supervision weight:", supervisionWeightSpinner), supervisionWeightSpinner,
+                       tipLabel("Val. split:", valSplitSpinner), valSplitSpinner);
+        grid.addRow(3, tipLabel("Early stop patience:", earlyStopSpinner), earlyStopSpinner);
 
         return new VBox(5, heading, grid, classWeightsCheck, augmentationCheck);
     }
@@ -1366,6 +1366,15 @@ public class AutoencoderDialog {
     }
 
     // Simple JSON helpers (avoid adding a JSON library dependency)
+    /** Creates a Label that shares the tooltip of its associated control. */
+    private static Label tipLabel(String text, javafx.scene.control.Control control) {
+        Label label = new Label(text);
+        if (control.getTooltip() != null) {
+            label.setTooltip(control.getTooltip());
+        }
+        return label;
+    }
+
     private static String parseJsonString(String json, String key, String defaultVal) {
         String pattern = "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"";
         var m = java.util.regex.Pattern.compile(pattern).matcher(json);
