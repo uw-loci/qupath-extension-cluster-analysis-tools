@@ -15,6 +15,8 @@ umap-learn = ">=0.5.5"
 numba = ">=0.59"
 matplotlib-base = ">=3.7"
 h5py = ">=3.0"
+# pyproj via conda-forge (includes PROJ C library; pip build fails on macOS)
+pyproj = ">=3.6"
 # PyTorch + torchvision via conda-forge for GPU support
 # Required for foundation model feature extraction and zero-shot phenotyping
 pytorch = ">=2.0.0"
