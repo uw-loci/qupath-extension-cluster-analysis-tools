@@ -656,15 +656,32 @@ else:
         data_norm = data.copy()
     data_norm_tiles = None
 
-# 3. Compute class weights (inverse-frequency)
+# 3. Compute class weights
 class_weight_tensor = None
 if has_labels and do_class_weights and n_classes > 1:
-    class_counts = np.array([int((label_array == i).sum()) for i in range(n_classes)])
-    class_counts = np.maximum(class_counts, 1)
-    weights = 1.0 / class_counts
-    weights = weights / weights.sum() * n_classes
+    # Check for manual weights from the dialog
+    use_manual = False
+    try:
+        if manual_weight_names and manual_weight_values:
+            manual_map = dict(zip(list(manual_weight_names), list(manual_weight_values)))
+            weights = np.array([float(manual_map.get(name, 1.0)) for name in class_names],
+                               dtype=np.float32)
+            use_manual = True
+            logger.info("Using manual class weights: %s",
+                        {name: "%.2f" % w for name, w in zip(class_names, weights)})
+    except NameError:
+        pass
+
+    if not use_manual:
+        # Auto-compute inverse-frequency weights
+        class_counts = np.array([int((label_array == i).sum()) for i in range(n_classes)])
+        class_counts = np.maximum(class_counts, 1)
+        weights = 1.0 / class_counts
+        weights = weights / weights.sum() * n_classes
+        logger.info("Auto class weights (inverse-frequency): %s",
+                    {name: "%.2f" % w for name, w in zip(class_names, weights)})
+
     class_weight_tensor = torch.tensor(weights, dtype=torch.float32)
-    logger.info("Class weights: %s", {name: "%.2f" % w for name, w in zip(class_names, weights)})
 
 # Scale supervision weight by label fraction (scANVI practice)
 # This accounts for classification loss only applying to labeled cells

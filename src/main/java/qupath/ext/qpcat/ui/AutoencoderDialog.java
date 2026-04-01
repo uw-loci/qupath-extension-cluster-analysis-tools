@@ -86,6 +86,9 @@ public class AutoencoderDialog {
     private ListView<String> imageListView;
     private final List<SimpleBooleanProperty> imageCheckProps = new ArrayList<>();
     private PieChart classDistributionChart;
+    private GridPane classWeightsGrid;
+    private VBox classWeightsBox;
+    private final Map<String, Spinner<Double>> classWeightSpinners = new LinkedHashMap<>();
     private Label statusLabel;
     private ProgressBar progressBar;
     private Button trainButton;
@@ -326,13 +329,33 @@ public class AutoencoderDialog {
         classDistributionChart.setVisible(false);
         classDistributionChart.setManaged(false);
 
+        // Class weights section
+        classWeightsGrid = new GridPane();
+        classWeightsGrid.setHgap(10);
+        classWeightsGrid.setVgap(4);
+        classWeightsGrid.setVisible(false);
+        classWeightsGrid.setManaged(false);
+
+        Button autoBalanceBtn = new Button("Auto-Balance Weights");
+        autoBalanceBtn.setOnAction(e -> autoBalanceWeights());
+        autoBalanceBtn.setTooltip(new Tooltip(
+                "Compute inverse-frequency weights so rare classes\n"
+                + "get more influence during training. Resets any\n"
+                + "manual weight adjustments."));
+
+        classWeightsBox = new VBox(5,
+                new Label("Class Weights (adjust per class):"),
+                classWeightsGrid, autoBalanceBtn);
+        classWeightsBox.setVisible(false);
+        classWeightsBox.setManaged(false);
+
         Label hint = new Label(
                 "Tip: Label 100-200 cells per class for best results. "
                 + "Unlabeled cells contribute to reconstruction but not classification.");
         hint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
         hint.setWrapText(true);
 
-        return new VBox(5, labelSummaryLabel, classDistributionChart, hint);
+        return new VBox(5, labelSummaryLabel, classDistributionChart, classWeightsBox, hint);
     }
 
     private VBox createMeasurementSection() {
@@ -967,6 +990,81 @@ public class AutoencoderDialog {
                 if (newNode != null) newNode.setStyle(style);
             });
         }
+
+        // Update class weights grid
+        updateClassWeightsGrid(classCounts);
+    }
+
+    /** Populate the class weights grid with one spinner per class. */
+    private void updateClassWeightsGrid(Map<String, Integer> classCounts) {
+        classWeightsGrid.getChildren().clear();
+        classWeightSpinners.clear();
+
+        if (classCounts == null || classCounts.size() < 2) {
+            classWeightsBox.setVisible(false);
+            classWeightsBox.setManaged(false);
+            return;
+        }
+
+        classWeightsBox.setVisible(true);
+        classWeightsBox.setManaged(true);
+
+        int row = 0;
+        for (var entry : classCounts.entrySet()) {
+            String className = entry.getKey();
+            Label nameLabel = new Label(className + ":");
+            nameLabel.setPrefWidth(120);
+
+            Spinner<Double> weightSpinner = new Spinner<>(0.1, 20.0, 1.0, 0.1);
+            weightSpinner.setEditable(true);
+            weightSpinner.setPrefWidth(80);
+            weightSpinner.setTooltip(new Tooltip(
+                    "Weight for class '" + className + "' (default: 1.0).\n"
+                    + "Higher weight = more influence during training.\n"
+                    + "Use Auto-Balance to set from class frequencies,\n"
+                    + "then adjust manually if needed."));
+
+            classWeightSpinners.put(className, weightSpinner);
+            classWeightsGrid.addRow(row, nameLabel, weightSpinner);
+            row++;
+        }
+
+        // Auto-balance on first population
+        autoBalanceWeights();
+    }
+
+    /** Compute inverse-frequency weights and set spinners. */
+    private void autoBalanceWeights() {
+        if (classWeightSpinners.isEmpty()) return;
+
+        // Get counts from the last chart update (stored in pie chart data)
+        Map<String, Double> counts = new LinkedHashMap<>();
+        for (var data : classDistributionChart.getData()) {
+            // Label format: "ClassName (X.Y%, N)"
+            String label = data.getName();
+            // Extract class name (everything before the last parenthetical)
+            int parenIdx = label.lastIndexOf(" (");
+            String name = parenIdx > 0 ? label.substring(0, parenIdx) : label;
+            counts.put(name, data.getPieValue());
+        }
+
+        if (counts.isEmpty()) return;
+
+        // Compute median count
+        double[] vals = counts.values().stream().mapToDouble(Double::doubleValue).sorted().toArray();
+        double median = vals[vals.length / 2];
+
+        for (var entry : classWeightSpinners.entrySet()) {
+            Double count = counts.get(entry.getKey());
+            if (count != null && count > 0) {
+                double weight = Math.max(0.1, Math.min(20.0, median / count));
+                // Round to 1 decimal
+                weight = Math.round(weight * 10.0) / 10.0;
+                entry.getValue().getValueFactory().setValue(weight);
+            } else {
+                entry.getValue().getValueFactory().setValue(1.0);
+            }
+        }
     }
 
     // ==================== Actions ====================
@@ -1062,6 +1160,11 @@ public class AutoencoderDialog {
         double valSplit = valSplitSpinner.getValue();
         int earlyStopPatience = earlyStopSpinner.getValue();
         boolean useClassWeights = classWeightsCheck.isSelected();
+        // Collect manual class weights from spinners
+        Map<String, Double> manualClassWeights = new LinkedHashMap<>();
+        for (var entry : classWeightSpinners.entrySet()) {
+            manualClassWeights.put(entry.getKey(), entry.getValue().getValue());
+        }
         boolean useAugmentation = augmentationCheck.isSelected();
         boolean labelLocked = labelLockedCheck.isSelected();
         boolean labelPoints = labelPointsCheck.isSelected();
@@ -1108,7 +1211,8 @@ public class AutoencoderDialog {
                         selectedMeasurements, normId,
                         latentDim, epochs, lr, batchSize, supWeight,
                         inputMode, tileSize, dsample, includeMask,
-                        valSplit, earlyStopPatience, useClassWeights, useAugmentation,
+                        valSplit, earlyStopPatience, useClassWeights, manualClassWeights,
+                        useAugmentation,
                         labelLocked, labelPoints, labelDetections, cellsOnly,
                         progress);
 

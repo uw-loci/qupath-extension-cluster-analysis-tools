@@ -1744,7 +1744,8 @@ public class ClusteringWorkflow {
             int batchSize, double supervisionWeight,
             String inputMode, int tileSize, double downsample, boolean includeCellMask,
             double validationSplit, int earlyStoppingPatience,
-            boolean enableClassWeights, boolean enableAugmentation,
+            boolean enableClassWeights, Map<String, Double> manualClassWeights,
+            boolean enableAugmentation,
             boolean labelFromLocked, boolean labelFromPoints, boolean labelFromDetections,
             boolean cellsOnly,
             Consumer<String> progressCallback) throws IOException {
@@ -1914,6 +1915,12 @@ public class ClusteringWorkflow {
                 inputs.put("validation_split", validationSplit);
                 inputs.put("early_stopping_patience", earlyStoppingPatience);
                 inputs.put("enable_class_weights", enableClassWeights);
+                if (manualClassWeights != null && !manualClassWeights.isEmpty()) {
+                    inputs.put("manual_weight_names",
+                            new ArrayList<>(manualClassWeights.keySet()));
+                    inputs.put("manual_weight_values",
+                            new ArrayList<>(manualClassWeights.values()));
+                }
                 inputs.put("enable_augmentation", enableAugmentation);
 
                 // Advanced VAE parameters from Preferences
