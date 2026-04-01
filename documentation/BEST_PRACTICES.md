@@ -470,3 +470,10 @@ Name rule sets with versions (e.g., "Immune Panel v1", "Immune Panel v2") rather
 - Use downsample 2x-4x for large tile sizes (saves memory, preserves most features)
 - The cell mask channel (default ON) helps the model focus on the target cell
 - All image channels are included automatically
+- **Hybrid input**: Select morphology measurements (Solidity, Area, Circularity) alongside tiles to give the model quantitative shape features that complement pixel data. This is especially useful when cell shape is discriminative but hard for the convnet to learn from pixels alone (e.g., elongated fibroblasts vs round lymphocytes).
+
+### Class Weights
+
+- Use **Auto-Balance** when class populations are significantly imbalanced (e.g., 10:1 ratio or worse). This computes inverse-frequency weights so rare classes contribute equally to the loss.
+- Manually adjust per-class weight spinners when you want to prioritize accuracy on specific classes -- increase the weight for classes where misclassification is most costly.
+- If all classes are roughly equally represented, the default weight of 1.0 for each class is fine and Auto-Balance is unnecessary.

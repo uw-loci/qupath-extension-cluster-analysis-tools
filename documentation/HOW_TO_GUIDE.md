@@ -303,8 +303,12 @@ Train a VAE-based classifier on labeled cells, then apply across the project. Th
 4. **Choose input mode:**
    - **Measurements** (default, recommended): Select measurements to use (typically "Mean" channel intensities). Fast, CPU-friendly.
    - **Tile images**: Uses pixel data around each cell. Captures morphology and texture. Choose tile size (32x32 recommended). Slower, benefits from GPU.
+   - **Hybrid (Tile + Measurements)**: When tile mode is selected, you can also select measurements in the measurement panel. The model uses a Hybrid ConvVAE that concatenates convolutional tile features with the selected measurements (e.g., Solidity, Area, Circularity, or channel intensities) before the latent space. This combines spatial/morphological pixel information with quantitative cell-level features.
 5. **Cell mask channel** (tile mode only, default ON): Appends a binary mask of the cell's outline as an extra channel. This tells the network which cell is the target while preserving neighbor context. Based on CellSighter (Amitay et al. 2023, Nature Communications).
-6. **Adjust training parameters** if desired (defaults work well for most cases):
+6. **Configure class weights:**
+   - **Per-class weight spinners**: Individual weight spinners appear for each detected class. Adjust to emphasize or de-emphasize specific cell types during training.
+   - **Auto-Balance button**: Click to automatically compute inverse-frequency weights based on the number of labeled cells per class. This is recommended when class populations are imbalanced (e.g., 5000 tumor cells but only 200 rare immune cells).
+7. **Adjust training parameters** if desired (defaults work well for most cases):
    - Latent dimensions: 16 (how compressed the representation is; 8-32 typical)
    - Epochs: 100 (maximum training iterations; early stopping may stop sooner)
    - Supervision weight: 1.0 (how strongly labels influence the model; 0 = unsupervised)
@@ -313,9 +317,9 @@ Train a VAE-based classifier on labeled cells, then apply across the project. Th
    - Validation split: 0.2 (20% holdout for early stopping and best model selection)
    - Early stop patience: 15 (epochs without val improvement before stopping; 0 = disabled)
    - Class weighting: ON (handles imbalanced cell populations via inverse-frequency weights)
-   - Data augmentation: ON (Gaussian noise + per-channel scaling for measurement mode)
-7. Click **Train on Current Image**
-8. Review accuracy on labeled cells in the status bar
+   - Data augmentation: expand the collapsible **Augmentation** section to configure augmentation options (Gaussian noise + per-channel scaling for measurement mode). The section is collapsed by default to reduce dialog clutter.
+8. Click **Train on Current Image**
+9. Review accuracy on labeled cells in the status bar
 
 ### Applying to Project
 

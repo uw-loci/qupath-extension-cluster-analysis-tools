@@ -262,6 +262,7 @@ Follows the scANVI pattern (Xu et al. 2021) adapted for continuous protein measu
 
 - **Measurements** (default): Uses per-cell measurement values (e.g., mean channel intensities). MLP encoder/decoder. Fast (seconds to minutes on CPU). No GPU required.
 - **Tile images**: Uses multi-channel pixel tiles centered on each cell. Convolutional encoder/decoder. Captures spatial morphology and texture that measurements miss. All image channels included automatically. Optionally appends a binary cell mask channel (CellSighter approach, Amitay et al. 2023, Nature Communications). Benefits from GPU; CPU is slower.
+- **Hybrid (Tile + Measurements)**: In tile mode, selected measurements can be included as a secondary input alongside pixel tiles. The model uses a Hybrid ConvVAE architecture where convolutional features from the image tile are concatenated with measurement values before the latent space. This combines spatial/morphological information from pixels with quantitative features like Solidity, Area, Circularity, or channel intensities. Select measurements in the measurement panel even when tile mode is active to enable hybrid input.
 
 ### Cell Mask Channel (Tile Mode)
 
@@ -271,6 +272,8 @@ When "Include cell mask channel" is checked (default ON), a binary mask of the t
 - Neighboring cell pixels are NOT zeroed out -- their context is informative
 - The network learns which cell to classify while using spatial context from neighbors
 - Based on CellSighter (Amitay et al. 2023) which showed neighbor spillover patterns help classification in multiplexed imaging
+
+For additional discriminative power, morphology measurements such as Solidity, Area, and Circularity can be combined with tile input via the hybrid mode (see [Input Modes](#input-modes)).
 
 ### Performance Considerations
 
@@ -303,6 +306,8 @@ VAE best practices and training infrastructure:
 | **Active units monitoring** | Warns on posterior collapse (low active latent dims) | Auto |
 | **R-squared diagnostics** | Per-feature reconstruction quality check | Auto |
 | **Class weighting** | Inverse-frequency weights for imbalanced populations | ON |
+| **Per-class weight spinners** | Manual per-class weight adjustment via individual spinners in the dialog | 1.0 each |
+| **Auto-Balance** | Button that computes inverse-frequency weights and populates per-class spinners automatically | -- |
 | **Validation split** | Stratified holdout set for monitoring overfitting | 20% |
 | **Early stopping** | Stop when val accuracy plateaus; restore best model | Patience=15 |
 | **ReduceLROnPlateau** | Halve LR when loss plateaus (standard VAE scheduler) | factor=0.5 |
