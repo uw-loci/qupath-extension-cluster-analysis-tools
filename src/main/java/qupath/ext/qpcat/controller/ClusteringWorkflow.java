@@ -1368,8 +1368,8 @@ public class ClusteringWorkflow {
                 }
 
                 // Cleanup
-                try { tilesNd.close(); } catch (Exception ignored) {}
-                try { featuresNd.close(); } catch (Exception ignored) {}
+                closeQuietly(tilesNd, "tilesNd");
+                closeQuietly(featuresNd, "featuresNd");
 
                 return dim;
             });
@@ -1505,12 +1505,12 @@ public class ClusteringWorkflow {
                                         simBuf[i * nPhenotypes + p]);
                             }
                         }
-                        try { simNd.close(); } catch (Exception ignored) {}
+                        closeQuietly(simNd, "simNd");
                     }
                 }
 
-                try { tilesNd.close(); } catch (Exception ignored) {}
-                try { labelsNd.close(); } catch (Exception ignored) {}
+                closeQuietly(tilesNd, "tilesNd");
+                closeQuietly(labelsNd, "labelsNd");
                 return null;
             });
         } catch (IOException e) {
@@ -2027,9 +2027,9 @@ public class ClusteringWorkflow {
                 resultMap.put("n_classes", task.outputs.get("n_classes"));
                 resultMap.put("active_units", task.outputs.get("active_units"));
 
-                try { latentNd.close(); } catch (Exception ignored) {}
-                try { predNd.close(); } catch (Exception ignored) {}
-                try { confNd.close(); } catch (Exception ignored) {}
+                closeQuietly(latentNd, "latentNd");
+                closeQuietly(predNd, "predNd");
+                closeQuietly(confNd, "confNd");
 
                 return null;
             });
@@ -2229,7 +2229,7 @@ public class ClusteringWorkflow {
                     NDArray predNd = (NDArray) task.outputs.get("predicted_labels");
                     int[] preds = new int[nCells];
                     predNd.buffer().asIntBuffer().get(preds);
-                    try { predNd.close(); } catch (Exception ignored) {}
+                    closeQuietly(predNd, "predNd");
                     return preds;
                 });
             } catch (Exception e) {
@@ -2487,9 +2487,9 @@ public class ClusteringWorkflow {
                                 predLabels, classNames);
                     }
 
-                    try { latentNd.close(); } catch (Exception ignored) {}
-                    try { predNd.close(); } catch (Exception ignored) {}
-                    try { confNd.close(); } catch (Exception ignored) {}
+                    closeQuietly(latentNd, "latentNd");
+                    closeQuietly(predNd, "predNd");
+                    closeQuietly(confNd, "confNd");
 
                     return null;
                 });
@@ -2570,5 +2570,20 @@ public class ClusteringWorkflow {
 
     private static void report(Consumer<String> callback, String message) {
         if (callback != null) callback.accept(message);
+    }
+
+    /**
+     * Close an Appose NDArray (or any AutoCloseable), logging at debug if it
+     * fails. Used during best-effort cleanup of shared-memory buffers; we
+     * cannot meaningfully recover from a close failure here, but silent
+     * swallowing hides real bugs.
+     */
+    private static void closeQuietly(AutoCloseable resource, String name) {
+        if (resource == null) return;
+        try {
+            resource.close();
+        } catch (Exception e) {
+            logger.debug("Failed to close {}: {}", name, e.getMessage());
+        }
     }
 }

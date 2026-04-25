@@ -1681,7 +1681,8 @@ public class AutoencoderDialog {
             metadata.putAll(trainedMetrics);
 
             // Prompt for name
-            String defaultName = "autoencoder_" + trainedClassNames.length + "classes";
+            int nClasses = trainedClassNames != null ? trainedClassNames.length : 0;
+            String defaultName = "autoencoder_" + nClasses + "classes";
             String name = Dialogs.showInputDialog(
                     TEST_BADGE + "Save Autoencoder Model",
                     "Enter a name for this classifier:",
