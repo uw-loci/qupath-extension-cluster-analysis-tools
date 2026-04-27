@@ -1,0 +1,33 @@
+name: Notify catalog of release
+
+# Fires when this repo publishes a release. Sends a repository_dispatch event
+# of type `extension-release` to the QuPath extension catalog so it can
+# auto-bump catalog.json to the new tag and asset URL.
+#
+# See uw-loci/qupath-catalog-mikenelson/MAINTAINERS.md for the full
+# auto-update flow, the org-level CATALOG_DISPATCH_TOKEN secret it uses,
+# and recovery steps if a dispatch fails.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send release event to catalog
+        env:
+          GH_TOKEN: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
+        run: |
+          ASSET_URL=$(echo '${{ toJSON(github.event.release.assets) }}' \
+            | jq -r '[.[] | select(.name | endswith("-all.jar"))][0].browser_download_url')
+          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+            echo "::error::No '*-all.jar' asset found on release ${{ github.event.release.tag_name }}"
+            exit 1
+          fi
+          gh api repos/uw-loci/qupath-catalog-mikenelson/dispatches \
+            -f event_type=extension-release \
+            -F "client_payload[repo]=${{ github.repository }}" \
+            -F "client_payload[tag]=${{ github.event.release.tag_name }}" \
+            -F "client_payload[asset_url]=$ASSET_URL"
