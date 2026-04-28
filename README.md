@@ -16,18 +16,21 @@ QP-CAT embeds a full scientific Python environment (via [Appose](https://github.
 
 ## Features
 
-- **7 clustering algorithms** -- Leiden, KMeans, HDBSCAN, Agglomerative, MiniBatch KMeans, Gaussian Mixture, and BANKSY (spatially-aware)
-- **Spatial feature smoothing** -- graph convolution pre-step that smooths features using spatial neighbors before clustering, making any algorithm spatially-aware
-- **Foundation model feature extraction** -- extracts tile-level morphological embeddings from vision foundation models (H-optimus-0, Virchow, Hibou-B/L, Midnight, DINOv2-Large) via [LazySlide](https://doi.org/10.1038/s41592-026-03044-7)
-- **Zero-shot phenotyping** -- assigns cell phenotypes using natural language text prompts and [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) vision-language model (MIT License, Microsoft)
-- **Rule-based phenotyping** with per-marker gating and auto-threshold computation (Triangle, GMM, Gamma methods)
-- **Dimensionality reduction** -- UMAP, PCA, t-SNE with interactive scatter visualization
-- **Spatial analysis** -- neighborhood enrichment and Moran's I autocorrelation via squidpy
-- **Batch correction** -- Harmony integration for multi-image project-wide clustering
-- **Post-analysis** -- marker ranking (Wilcoxon), PAGA trajectory graphs, dotplots, violin plots
-- **AnnData export** -- `.h5ad` files for interoperability with Scanpy, Seurat, cellxgene
-- **Operation audit trail** -- persistent per-project log of every operation with full parameters
-- **One-click environment setup** -- downloads and configures all Python dependencies automatically
+Each bullet leads with what you can *do* with QP-CAT; the algorithm name is in parentheses for when you need to know what's under the hood.
+
+- **No-setup install** -- one click downloads and configures the full Python environment for you. No conda, no command line, no environment fights. ~1.5-2.5 GB download, ~2.5 GB on disk
+- **Discover cell types without labels** -- automatic grouping of cells by their marker expression. Pick the algorithm that fits your question: Leiden or KMeans for first-pass discovery, HDBSCAN when you expect rare populations or noise, BANKSY when tissue architecture matters; plus Agglomerative, MiniBatch KMeans, and Gaussian Mixture for special cases
+- **Phenotype with plain-English prompts** -- type "exhausted T cell" or "tumor-associated macrophage" and the model labels matching cells, no training required (zero-shot via [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224), MIT License, Microsoft)
+- **Annotate a few cells, classify the rest** *(test feature)* -- label a small subset of cells in QuPath and a variational autoencoder (VAE) extends those labels to every cell in the project. Learns from your marker measurements, from the actual image patch around each cell (optionally with a CellSighter-style cell-mask channel so the network knows which cell is "the" cell), or both combined
+- **Cluster on what cells look like, not just what markers say** -- pretrained vision models turn each tile into a numerical fingerprint of its morphology, so clusters can be driven by tissue appearance in addition to marker intensities. Useful when staining is variable, channels are limited, or morphology carries information your markers miss (H-optimus-0, Virchow, Hibou-B/L, Midnight, DINOv2-Large via [LazySlide](https://doi.org/10.1038/s41592-026-03044-7))
+- **Cleaner clusters via tissue context** -- optional pre-step that averages each cell's features with its spatial neighbors before clustering, so niches and tissue zones come out as connected regions instead of salt-and-pepper noise. Turns any of the algorithms above into a spatially-aware version (graph convolution smoothing)
+- **Marker gating with auto-thresholds** -- classic flow-cytometry-style cell typing, with sensible threshold suggestions per marker (Triangle, GMM, and Gamma auto-threshold methods)
+- **Click the plot, see the cells** -- interactive UMAP / PCA / t-SNE: brush a region of the embedding and the corresponding cells highlight on the slide
+- **Test where cell types live in tissue** -- ask whether two phenotypes co-localize, avoid each other, or scatter randomly across the tissue (neighborhood enrichment + Moran's I autocorrelation via squidpy)
+- **Compare across slides and batches** -- batch correction so your clusters reflect biology, not slide-of-origin or staining-day effects, when you analyze a multi-image project all at once (Harmony integration)
+- **Publication-ready follow-up** -- find the markers that define each cluster (Wilcoxon ranking) and generate dotplots, violin plots, and PAGA trajectory graphs without leaving QuPath
+- **Easy hand-off to Python / R** -- export results as standard `.h5ad` AnnData files. Compatible with Scanpy, Seurat, and cellxgene, so you can keep going in your usual notebook when you want to
+- **Reproducible audit trail** -- every operation is logged per-project with the full parameters used, so you (or a reviewer) can retrace exactly what was run, when, and how
 
 ---
 
@@ -658,6 +661,10 @@ Developed at the [Laboratory for Optical and Computational Instrumentation (LOCI
 - [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) -- Zero-shot vision-language phenotyping (MIT License, Microsoft)
 
 ---
+
+## Support
+
+For general support and feature requests, please post on the [image.sc forum](https://forum.image.sc/) with the `#qupath` tag and mention `@Mike_Nelson` to flag the topic for my attention.
 
 ## License
 
